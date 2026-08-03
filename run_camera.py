@@ -148,10 +148,13 @@ def main() -> None:
                     for track_id, box in zip(ids, boxes)
                 }
 
+            face_boxes_to_draw: list[tuple[tuple[int, int, int, int], str, float]] = []
+
             for face in face_engine.detect(frame):
                 if not face.quality_ok:
                     continue
 
+                fx1, fy1, fx2, fy2 = map(int, face.bbox)
                 track_id = associate_face_to_track(face, people)
                 if track_id is None:
                     continue
@@ -185,12 +188,39 @@ def main() -> None:
                         match.score,
                     )
 
+                label, f_score = confirmed_identities.get(
+                    track_id, ("UNKNOWN", 0.0)
+                )
+                face_boxes_to_draw.append(((fx1, fy1, fx2, fy2), label, f_score))
+
                 last_seen[track_id] = time.monotonic()
 
             frame_height, frame_width = frame.shape[:2]
             line_y = int(
                 frame_height * config.attendance.line_y_ratio
             )
+
+            # 1. Draw Face Bounding Boxes (BBox 2 - Green / Coral)
+            if config.camera.show_preview:
+                for (fx1, fy1, fx2, fy2), f_label, f_score in face_boxes_to_draw:
+                    face_color = (0, 255, 127) if f_label != "UNKNOWN" else (0, 165, 255)
+                    cv.rectangle(
+                        frame,
+                        (fx1, fy1),
+                        (fx2, fy2),
+                        face_color,
+                        2,
+                    )
+                    cv.putText(
+                        frame,
+                        f"Face: {f_label} ({f_score:.2f})",
+                        (fx1, max(15, fy1 - 5)),
+                        cv.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        face_color,
+                        1,
+                        cv.LINE_AA,
+                    )
 
             for track_id, (x1, y1, x2, y2) in people.items():
                 center_y = (y1 + y2) // 2
@@ -236,26 +266,29 @@ def main() -> None:
                 previous_sides[track_id] = current_side
                 last_seen[track_id] = time.monotonic()
 
+                # 2. Draw Person Bounding Boxes (BBox 1 - Cyan / Gold)
                 if config.camera.show_preview:
                     label, score = confirmed_identities.get(
                         track_id,
                         ("UNKNOWN", 0.0),
                     )
+                    person_color = (255, 200, 0) if label != "UNKNOWN" else (220, 220, 220)
                     cv.rectangle(
                         frame,
                         (x1, y1),
                         (x2, y2),
-                        (255, 255, 255),
+                        person_color,
                         2,
                     )
                     cv.putText(
                         frame,
-                        f"{track_id}: {label} {score:.2f}",
+                        f"Person #{track_id}: {label}",
                         (x1, max(20, y1 - 8)),
                         cv.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (255, 255, 255),
+                        0.55,
+                        person_color,
                         2,
+                        cv.LINE_AA,
                     )
 
             now = time.monotonic()
@@ -271,13 +304,6 @@ def main() -> None:
                 last_seen.pop(track_id, None)
 
             if config.camera.show_preview:
-                cv.line(
-                    frame,
-                    (0, line_y),
-                    (frame_width, line_y),
-                    (255, 255, 255),
-                    2,
-                )
                 preview_w = 1152
                 preview_h = int(frame_height * (preview_w / frame_width))
                 preview_frame = cv.resize(frame, (preview_w, preview_h))
