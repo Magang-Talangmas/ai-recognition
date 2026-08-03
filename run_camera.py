@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections import defaultdict, deque
 
@@ -18,8 +19,70 @@ from attendance_cv.vision_utils import (
 )
 
 
+class RTSPReader:
+    """Background thread that continuously grabs the latest frame from an
+    RTSP stream, discarding buffered/stale frames to eliminate delay."""
+
+    def __init__(self, source: int | str, reconnect_delay: float = 3.0) -> None:
+        self.source = source
+        self.reconnect_delay = reconnect_delay
+        self._frame: cv.typing.MatLike | None = None
+        self._ok: bool = False
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            cap = cv.VideoCapture(self.source)
+            cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
+            if not cap.isOpened():
+                print("Camera unavailable. Reconnecting...")
+                time.sleep(self.reconnect_delay)
+                continue
+            while not self._stop_event.is_set():
+                ok, frame = cap.read()
+                if not ok:
+                    print("Stream read failed. Reconnecting...")
+                    break
+                with self._lock:
+                    self._frame = frame
+                    self._ok = True
+            cap.release()
+            if not self._stop_event.is_set():
+                time.sleep(self.reconnect_delay)
+
+    def read(self) -> tuple[bool, cv.typing.MatLike | None]:
+        """Return the latest frame without blocking."""
+        with self._lock:
+            return self._ok, self._frame.copy() if self._frame is not None else None
+
+    def is_ready(self) -> bool:
+        with self._lock:
+            return self._ok
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=5)
+
+
 def parse_source(value: str) -> int | str:
     return int(value) if value.isdigit() else value
+
+
+def pad_box(
+    x1: int, y1: int, x2: int, y2: int,
+    pad: int,
+    frame_w: int, frame_h: int,
+) -> tuple[int, int, int, int]:
+    """Expand a bounding box by `pad` pixels on each side, clamped to frame."""
+    return (
+        max(0, x1 - pad),
+        max(0, y1 - pad),
+        min(frame_w, x2 + pad),
+        min(frame_h, y2 + pad),
+    )
 
 
 def passes_liveness(allow_insecure: bool) -> bool:
@@ -49,20 +112,24 @@ def main() -> None:
     last_seen: dict[int, float] = {}
 
     frame_number = 0
+    window_initialized = False
 
-    while True:
-        capture = cv.VideoCapture(parse_source(config.camera.source))
+    reader = RTSPReader(
+        parse_source(config.camera.source),
+        reconnect_delay=config.camera.reconnect_delay_seconds,
+    )
 
-        if not capture.isOpened():
-            print("Camera unavailable. Reconnecting...")
-            time.sleep(config.camera.reconnect_delay_seconds)
-            continue
+    print("Waiting for first frame from RTSP stream...")
+    while not reader.is_ready():
+        time.sleep(0.1)
+    print("Stream connected. Starting detection.")
 
+    try:
         while True:
-            ok, frame = capture.read()
-            if not ok:
-                print("Stream read failed. Reconnecting...")
-                break
+            ok, frame = reader.read()
+            if not ok or frame is None:
+                time.sleep(0.05)
+                continue
 
             frame_number += 1
             if frame_number % config.camera.process_every_n_frames != 0:
@@ -125,6 +192,13 @@ def main() -> None:
             line_y = int(
                 frame_height * config.attendance.line_y_ratio
             )
+
+            # Expand all person boxes by configured padding
+            pad = getattr(config.person, "bbox_padding", 40)
+            people = {
+                tid: pad_box(*box, pad, frame_width, frame_height)
+                for tid, box in people.items()
+            }
 
             for track_id, (x1, y1, x2, y2) in people.items():
                 center_y = (y1 + y2) // 2
@@ -212,15 +286,22 @@ def main() -> None:
                     (255, 255, 255),
                     2,
                 )
+
+                if not window_initialized:
+                    cv.namedWindow("SCRFD Attendance Starter", cv.WINDOW_NORMAL)
+                    cv.resizeWindow("SCRFD Attendance Starter", frame_width, frame_height)
+                    window_initialized = True
+
                 cv.imshow("SCRFD Attendance Starter", frame)
 
                 if cv.waitKey(1) & 0xFF == ord("q"):
-                    capture.release()
                     cv.destroyAllWindows()
+                    reader.stop()
                     return
 
-        capture.release()
-        time.sleep(config.camera.reconnect_delay_seconds)
+    finally:
+        reader.stop()
+        cv.destroyAllWindows()
 
 
 if __name__ == "__main__":

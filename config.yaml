@@ -1,5 +1,5 @@
 camera:
-  source: "0"                 # "0" for webcam or RTSP URL
+  source: "rtsp://admin:bismillah123@192.168.77.209:554"                 # "0" for webcam or RTSP URL
   camera_id: "main-entrance"
   process_every_n_frames: 2
   reconnect_delay_seconds: 3
@@ -9,6 +9,7 @@ person_detection:
   model_path: "models/yolov10n.pt"
   confidence: 0.40
   tracker: "bytetrack.yaml"
+  bbox_padding: 40           # pixels to expand each person box on all 4 sides
 
 face:
   model_pack: "buffalo_l"     # contains SCRFD detector + recognition model

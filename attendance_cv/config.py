@@ -19,6 +19,7 @@ class PersonConfig:
     model_path: str
     confidence: float
     tracker: str
+    bbox_padding: int = 0
 
 
 @dataclass(slots=True)

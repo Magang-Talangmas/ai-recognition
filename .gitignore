@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Model weights (large binary files)
+models/*.pt
+models/*.onnx
+
+# InsightFace downloaded models
+.insightface/
+
+# Database & generated data
+data/attendance.db
+data/embeddings.npz
+
+# Environment
+.env
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
