@@ -1,8 +1,42 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import os
+import re
 
 import yaml
+
+
+def _load_dotenv(env_path: Path = Path(".env")) -> None:
+    """Load key=value pairs from .env file into os.environ (if not already set)."""
+    if not env_path.exists():
+        return
+    with open(env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+def _expand_env(value: Any) -> Any:
+    """Recursively expand ${VAR} placeholders in string values."""
+    if isinstance(value, str):
+        return re.sub(
+            r"\$\{([^}]+)\}",
+            lambda m: os.environ.get(m.group(1), m.group(0)),
+            value,
+        )
+    if isinstance(value, dict):
+        return {k: _expand_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env(v) for v in value]
+    return value
+
 
 
 @dataclass(slots=True)
@@ -56,9 +90,12 @@ class AppConfig:
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
+    _load_dotenv()
     data: dict[str, Any]
     with open(path, "r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
+
+    data = _expand_env(data)
 
     return AppConfig(
         camera=CameraConfig(**data["camera"]),

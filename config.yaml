@@ -1,5 +1,5 @@
 camera:
-  source: "rtsp://admin:bismillah123@192.168.77.209:554"                 # "0" for webcam or RTSP URL
+  source: "${CAMERA_SOURCE}"        # set in .env file
   camera_id: "main-entrance"
   process_every_n_frames: 2
   reconnect_delay_seconds: 3

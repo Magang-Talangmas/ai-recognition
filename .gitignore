@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *.pyo
 
+# Environment / secrets
+.env
+
 # Model weights (large binary files)
 models/*.pt
 models/*.onnx
