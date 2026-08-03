@@ -14,12 +14,16 @@ Key OpenCV settings for near-zero latency RTSP:
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Optional
 
 import cv2 as cv
 import numpy as np
+
+# Force TCP transport and zero-buffering for low-latency RTSP
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;500000"
 
 
 class RtspReader:
