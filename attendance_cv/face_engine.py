@@ -80,17 +80,21 @@ class FaceEngine:
         embeddings: list[np.ndarray] = []
 
         for image in images:
-            valid = [
-                face
-                for face in self.detect(image)
-                if face.quality_ok
-            ]
-            if len(valid) == 1:
-                embeddings.append(valid[0].embedding)
+            faces = self.detect(image)
+            if not faces:
+                continue
+            # Always select the largest face (the primary subject in enrollment photo)
+            largest_face = max(
+                faces,
+                key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])),
+            )
+            # Accept if detection score is confident or quality is acceptable
+            if largest_face.quality_ok or largest_face.detection_score >= 0.60:
+                embeddings.append(largest_face.embedding)
 
-        if len(embeddings) < 3:
+        if len(embeddings) < 2:
             raise ValueError(
-                "At least 3 valid photos with exactly one quality face are required"
+                "At least 2 valid photos with detectable face are required"
             )
 
         template = np.mean(np.stack(embeddings), axis=0)

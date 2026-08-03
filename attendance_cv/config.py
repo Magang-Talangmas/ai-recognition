@@ -18,7 +18,6 @@ class CameraConfig:
 class PersonConfig:
     model_path: str
     confidence: float
-    tracker: str
 
 
 @dataclass(slots=True)
@@ -47,11 +46,18 @@ class AttendanceConfig:
 
 
 @dataclass(slots=True)
+class ApiConfig:
+    host: str
+    port: int
+
+
+@dataclass(slots=True)
 class AppConfig:
     camera: CameraConfig
     person: PersonConfig
     face: FaceConfig
     attendance: AttendanceConfig
+    api: ApiConfig
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
@@ -59,9 +65,12 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
     with open(path, "r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
 
+    api_data = data.get("api", {"host": "0.0.0.0", "port": 8000})
+
     return AppConfig(
         camera=CameraConfig(**data["camera"]),
         person=PersonConfig(**data["person_detection"]),
         face=FaceConfig(**data["face"]),
         attendance=AttendanceConfig(**data["attendance"]),
+        api=ApiConfig(**api_data),
     )

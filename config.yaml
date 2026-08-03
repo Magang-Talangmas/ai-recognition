@@ -1,28 +1,27 @@
 camera:
-  source: "0"                 # "0" for webcam or RTSP URL
+  source: "rtsp://admin:bismillah123@192.168.77.209:554"  # RTSP CCTV
   camera_id: "main-entrance"
-  process_every_n_frames: 2
+  process_every_n_frames: 1                 # Process every frame for minimum latency
   reconnect_delay_seconds: 3
   show_preview: true
 
 person_detection:
-  model_path: "models/yolov10n.pt"
-  confidence: 0.40
-  tracker: "bytetrack.yaml"
+  model_path: "models/yolov10n.onnx"
+  confidence: 0.30                         # Catch all seated and standing employees
 
 face:
-  model_pack: "buffalo_l"     # contains SCRFD detector + recognition model
+  model_pack: "buffalo_l"     # SCRFD detector + ArcFace recognition model
   model_root: ".insightface"
   providers:
     - "CPUExecutionProvider"
-  detection_size: 640
-  detection_threshold: 0.60
-  min_face_size: 80
-  blur_threshold: 60.0
-  match_threshold: 0.45
-  match_margin: 0.08
-  vote_window: 5
-  votes_required: 3
+  detection_size: 480         # Fast SCRFD inference on CPU
+  detection_threshold: 0.45   # Catch distant & side-profile faces
+  min_face_size: 25           # Allow distant background faces to be detected
+  blur_threshold: 15.0        # Soft focus tolerance for CCTV compression
+  match_threshold: 0.35       # Cosine threshold optimized for standing / distant faces
+  match_margin: 0.03
+  vote_window: 3
+  votes_required: 1           # 1 vote required = Instant recognition (Near Zero Delay)
 
 attendance:
   line_y_ratio: 0.55
@@ -31,3 +30,7 @@ attendance:
   event_database: "data/attendance.db"
   embedding_file: "data/embeddings.npz"
   allow_insecure_no_liveness: true
+
+api:
+  host: "0.0.0.0"
+  port: 8000
