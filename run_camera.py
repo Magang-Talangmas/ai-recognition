@@ -154,6 +154,7 @@ def main() -> None:
                     for track_id, box in zip(ids, boxes)
                 }
 
+            detected_faces_to_render = []
             for face in face_engine.detect(frame):
                 if not face.quality_ok:
                     continue
@@ -187,6 +188,7 @@ def main() -> None:
                     )
 
                 last_seen[track_id] = time.monotonic()
+                detected_faces_to_render.append((face.bbox, track_id, match.score))
 
             frame_height, frame_width = frame.shape[:2]
             line_y = int(
@@ -194,7 +196,7 @@ def main() -> None:
             )
 
             # Expand all person boxes by configured padding
-            pad = getattr(config.person, "bbox_padding", 40)
+            pad = getattr(config.person, "bbox_padding", 0)
             people = {
                 tid: pad_box(*box, pad, frame_width, frame_height)
                 for tid, box in people.items()
@@ -249,22 +251,64 @@ def main() -> None:
                         track_id,
                         ("UNKNOWN", 0.0),
                     )
+                    
+                    # Person Box Color: Green for recognized, Cyan/Orange for UNKNOWN
+                    person_color = (0, 255, 0) if label != "UNKNOWN" else (0, 215, 255)
+                    
+                    # 1. Draw Person Bounding Box
                     cv.rectangle(
                         frame,
                         (x1, y1),
                         (x2, y2),
-                        (255, 255, 255),
+                        person_color,
+                        2,
+                    )
+                    
+                    # 2-line Label for Monitoring (Line 1: Person ID, Line 2: Identity)
+                    line1 = f"PERSON #{track_id}"
+                    line2 = f"ID: {label} ({score:.2f})"
+                    
+                    cv.putText(
+                        frame,
+                        line1,
+                        (x1 + 4, max(25, y1 - 22)),
+                        cv.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        person_color,
                         2,
                     )
                     cv.putText(
                         frame,
-                        f"{track_id}: {label} {score:.2f}",
-                        (x1, max(20, y1 - 8)),
+                        line2,
+                        (x1 + 4, max(42, y1 - 4)),
                         cv.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (255, 255, 255),
+                        0.55,
+                        person_color,
                         2,
                     )
+
+            if config.camera.show_preview:
+                # 2. Draw Face Bounding Boxes with distinct Magenta/Purple color
+                face_color = (255, 0, 255)  # Magenta
+                for f_bbox, tid, f_score in detected_faces_to_render:
+                    fx1, fy1, fx2, fy2 = f_bbox.astype(int)
+                    cv.rectangle(
+                        frame,
+                        (fx1, fy1),
+                        (fx2, fy2),
+                        face_color,
+                        2,
+                    )
+                    cv.putText(
+                        frame,
+                        f"FACE ({f_score:.2f})",
+                        (fx1, max(15, fy1 - 6)),
+                        cv.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        face_color,
+                        1,
+                    )
+
 
             now = time.monotonic()
             stale_ids = [

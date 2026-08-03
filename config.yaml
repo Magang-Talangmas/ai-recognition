@@ -18,12 +18,12 @@ face:
     - "CPUExecutionProvider"
   detection_size: 640
   detection_threshold: 0.50
-  min_face_size: 40            # lowered: CCTV faces are smaller at distance
-  blur_threshold: 25.0         # lowered: CCTV/RTSP has compression artifacts
-  match_threshold: 0.30        # lowered: cross-domain (phone enroll vs CCTV)
-  match_margin: 0.05           # lowered: more lenient margin for CCTV
+  min_face_size: 24            # lowered to 24: captures small/distant faces in CCTV (30-38px)
+  blur_threshold: 25.0
+  match_threshold: 0.22        # lowered to 0.22 based on live RTSP score distribution (0.22-0.45)
+  match_margin: 0.03           # lowered margin to prevent rejecting valid borderline matches
   vote_window: 5
-  votes_required: 3
+  votes_required: 2            # reduced required votes to 2 for faster, stable confirmation
 
 attendance:
   line_y_ratio: 0.62           # raised slightly from 0.55
