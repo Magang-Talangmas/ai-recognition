@@ -80,17 +80,30 @@ class FaceEngine:
         embeddings: list[np.ndarray] = []
 
         for image in images:
-            valid = [
+            quality_faces = [
                 face
                 for face in self.detect(image)
                 if face.quality_ok
             ]
-            if len(valid) == 1:
-                embeddings.append(valid[0].embedding)
 
-        if len(embeddings) < 3:
+            if len(quality_faces) == 0:
+                continue
+
+            if len(quality_faces) == 1:
+                # Ideal case: exactly one quality face
+                best = quality_faces[0]
+            else:
+                # Multiple quality faces: pick the largest by bounding box area
+                best = max(
+                    quality_faces,
+                    key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]),
+                )
+
+            embeddings.append(best.embedding)
+
+        if len(embeddings) < 2:
             raise ValueError(
-                "At least 3 valid photos with exactly one quality face are required"
+                "At least 2 valid photos with a detectable quality face are required"
             )
 
         template = np.mean(np.stack(embeddings), axis=0)

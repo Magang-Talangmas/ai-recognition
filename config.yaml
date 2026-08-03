@@ -9,7 +9,7 @@ person_detection:
   model_path: "models/yolov10n.pt"
   confidence: 0.40
   tracker: "bytetrack.yaml"
-  bbox_padding: 40           # pixels to expand each person box on all 4 sides
+  bbox_padding: 0              # no extra padding (reverted to original)
 
 face:
   model_pack: "buffalo_l"     # contains SCRFD detector + recognition model
@@ -17,16 +17,16 @@ face:
   providers:
     - "CPUExecutionProvider"
   detection_size: 640
-  detection_threshold: 0.60
-  min_face_size: 80
-  blur_threshold: 60.0
-  match_threshold: 0.45
-  match_margin: 0.08
+  detection_threshold: 0.50
+  min_face_size: 40            # lowered: CCTV faces are smaller at distance
+  blur_threshold: 25.0         # lowered: CCTV/RTSP has compression artifacts
+  match_threshold: 0.30        # lowered: cross-domain (phone enroll vs CCTV)
+  match_margin: 0.05           # lowered: more lenient margin for CCTV
   vote_window: 5
   votes_required: 3
 
 attendance:
-  line_y_ratio: 0.55
+  line_y_ratio: 0.62           # raised slightly from 0.55
   inside_is_below_line: true
   duplicate_cooldown_seconds: 300
   event_database: "data/attendance.db"
