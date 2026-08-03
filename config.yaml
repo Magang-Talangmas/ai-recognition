@@ -9,12 +9,19 @@ person_detection:
   model_path: "models/yolov10n.pt"
   confidence: 0.40
   tracker: "bytetrack.yaml"
+  half_precision: true
 
 face:
   model_pack: "buffalo_l"     # contains SCRFD detector + recognition model
   model_root: ".insightface"
   providers:
+    - "TensorRTExecutionProvider"
+    - "CUDAExecutionProvider"
     - "CPUExecutionProvider"
+  provider_options:
+    trt_fp16_enable: true
+    trt_max_workspace_size: 2147483648
+    trt_engine_cache_enable: true
   detection_size: 640
   detection_threshold: 0.35
   min_face_size: 20
@@ -23,6 +30,7 @@ face:
   match_margin: 0.02
   vote_window: 1
   votes_required: 1
+  batch_size: 32
 
 attendance:
   line_y_ratio: 0.55

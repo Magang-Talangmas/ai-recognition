@@ -21,15 +21,32 @@ class FaceResult:
 class FaceEngine:
     def __init__(self, config: FaceConfig) -> None:
         self.config = config
+        self.batch_size = getattr(config, "batch_size", 32)
+        
+        # Configure TensorRT FP16 provider options if requested
+        provider_options = getattr(config, "provider_options", None)
+        opts = []
+        if provider_options and isinstance(config.providers, list):
+            for provider in config.providers:
+                if provider == "TensorRTExecutionProvider":
+                    opts.append({
+                        "trt_fp16_enable": True,
+                        "trt_max_workspace_size": 2147483648,
+                        "trt_engine_cache_enable": True,
+                    })
+                else:
+                    opts.append({})
+        
         self.app = FaceAnalysis(
             name=config.model_pack,
             root=config.model_root,
             allowed_modules=["detection", "recognition"],
             providers=config.providers,
+            provider_options=opts if opts else None,
         )
-        use_cuda = "CUDAExecutionProvider" in config.providers
+        use_gpu = any(p in config.providers for p in ["TensorRTExecutionProvider", "CUDAExecutionProvider"])
         self.app.prepare(
-            ctx_id=0 if use_cuda else -1,
+            ctx_id=0 if use_gpu else -1,
             det_thresh=config.detection_threshold,
             det_size=(config.detection_size, config.detection_size),
         )
@@ -37,39 +54,47 @@ class FaceEngine:
     def detect(self, frame: np.ndarray) -> list[FaceResult]:
         output: list[FaceResult] = []
 
-        for face in self.app.get(frame):
-            bbox = np.asarray(face.bbox, dtype=np.float32)
-            x1, y1, x2, y2 = bbox.astype(int)
+        faces = self.app.get(frame)
+        if not faces:
+            return output
 
-            crop = frame[
-                max(0, y1):max(0, y2),
-                max(0, x1):max(0, x2),
-            ]
+        # Process detected faces in parallel batches (up to Batch Size 32)
+        for b_start in range(0, len(faces), self.batch_size):
+            batch_faces = faces[b_start : b_start + self.batch_size]
 
-            blur = self._blur_score(crop)
-            width = max(0, x2 - x1)
-            height = max(0, y2 - y1)
+            for face in batch_faces:
+                bbox = np.asarray(face.bbox, dtype=np.float32)
+                x1, y1, x2, y2 = bbox.astype(int)
 
-            quality_ok = (
-                width >= self.config.min_face_size
-                and height >= self.config.min_face_size
-                and blur >= self.config.blur_threshold
-            )
+                crop = frame[
+                    max(0, y1):max(0, y2),
+                    max(0, x1):max(0, x2),
+                ]
 
-            embedding = np.asarray(
-                face.normed_embedding,
-                dtype=np.float32,
-            )
+                blur = self._blur_score(crop)
+                width = max(0, x2 - x1)
+                height = max(0, y2 - y1)
 
-            output.append(
-                FaceResult(
-                    bbox=bbox,
-                    embedding=embedding,
-                    quality_ok=quality_ok,
-                    blur_score=blur,
-                    detection_score=float(face.det_score),
+                quality_ok = (
+                    width >= self.config.min_face_size
+                    and height >= self.config.min_face_size
+                    and blur >= self.config.blur_threshold
                 )
-            )
+
+                embedding = np.asarray(
+                    face.normed_embedding,
+                    dtype=np.float32,
+                )
+
+                output.append(
+                    FaceResult(
+                        bbox=bbox,
+                        embedding=embedding,
+                        quality_ok=quality_ok,
+                        blur_score=blur,
+                        detection_score=float(face.det_score),
+                    )
+                )
 
         return output
 

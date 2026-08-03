@@ -40,6 +40,7 @@ class PersonConfig:
     model_path: str
     confidence: float
     tracker: str
+    half_precision: bool = True
 
 
 @dataclass(slots=True)
@@ -55,6 +56,8 @@ class FaceConfig:
     match_margin: float
     vote_window: int
     votes_required: int
+    batch_size: int = 32
+    provider_options: dict[str, Any] = None
 
 
 @dataclass(slots=True)
