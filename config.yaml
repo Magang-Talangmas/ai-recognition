@@ -15,6 +15,7 @@ face:
   model_pack: "buffalo_l"     # contains SCRFD detector + recognition model
   model_root: ".insightface"
   providers:
+    - "CUDAExecutionProvider"
     - "CPUExecutionProvider"
   detection_size: 640
   detection_threshold: 0.50
