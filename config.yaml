@@ -1,0 +1,33 @@
+camera:
+  source: "0"                 # "0" for webcam or RTSP URL
+  camera_id: "main-entrance"
+  process_every_n_frames: 2
+  reconnect_delay_seconds: 3
+  show_preview: true
+
+person_detection:
+  model_path: "models/yolov10n.pt"
+  confidence: 0.40
+  tracker: "bytetrack.yaml"
+
+face:
+  model_pack: "buffalo_l"     # contains SCRFD detector + recognition model
+  model_root: ".insightface"
+  providers:
+    - "CPUExecutionProvider"
+  detection_size: 640
+  detection_threshold: 0.60
+  min_face_size: 80
+  blur_threshold: 60.0
+  match_threshold: 0.45
+  match_margin: 0.08
+  vote_window: 5
+  votes_required: 3
+
+attendance:
+  line_y_ratio: 0.55
+  inside_is_below_line: true
+  duplicate_cooldown_seconds: 300
+  event_database: "data/attendance.db"
+  embedding_file: "data/embeddings.npz"
+  allow_insecure_no_liveness: true
