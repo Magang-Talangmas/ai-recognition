@@ -1,7 +1,7 @@
 camera:
-  source: "0"                 # "0" for webcam or RTSP URL
+  source: "${CAMERA_SOURCE}"                 # Loaded from .env or CAMERA_SOURCE env var
   camera_id: "main-entrance"
-  process_every_n_frames: 2
+  process_every_n_frames: 1
   reconnect_delay_seconds: 3
   show_preview: true
 
@@ -16,13 +16,13 @@ face:
   providers:
     - "CPUExecutionProvider"
   detection_size: 640
-  detection_threshold: 0.60
-  min_face_size: 80
-  blur_threshold: 60.0
-  match_threshold: 0.45
-  match_margin: 0.08
-  vote_window: 5
-  votes_required: 3
+  detection_threshold: 0.35
+  min_face_size: 20
+  blur_threshold: 10.0
+  match_threshold: 0.35
+  match_margin: 0.02
+  vote_window: 1
+  votes_required: 1
 
 attendance:
   line_y_ratio: 0.55

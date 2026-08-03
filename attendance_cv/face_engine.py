@@ -85,12 +85,16 @@ class FaceEngine:
                 for face in self.detect(image)
                 if face.quality_ok
             ]
-            if len(valid) == 1:
-                embeddings.append(valid[0].embedding)
+            if valid:
+                main_face = max(
+                    valid,
+                    key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]),
+                )
+                embeddings.append(main_face.embedding)
 
-        if len(embeddings) < 3:
+        if not embeddings:
             raise ValueError(
-                "At least 3 valid photos with exactly one quality face are required"
+                "No valid quality face was detected in any of the photos"
             )
 
         template = np.mean(np.stack(embeddings), axis=0)

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
+import threading
 import time
 from collections import defaultdict, deque
 
 import cv2 as cv
+import numpy as np
 from ultralytics import YOLO
 
 from attendance_cv.config import load_config
@@ -16,6 +19,50 @@ from attendance_cv.vision_utils import (
     crossing_direction,
     stable_identity,
 )
+
+# Set FFmpeg options for zero-latency real-time RTSP capture
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    "rtsp_transport;tcp|max_delay;500000|buffer_size;1024000|flags;low_delay"
+)
+
+
+class FreshRTSPStream:
+    """Threaded RTSP Stream reader that continuously flushes stale frames
+    to ensure zero-latency real-time stream processing."""
+
+    def __init__(self, source: int | str) -> None:
+        self.source = source
+        self.capture = cv.VideoCapture(source)
+        self.capture.set(cv.CAP_PROP_BUFFERSIZE, 1)
+        self.latest_frame: np.ndarray | None = None
+        self.stopped = False
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._update, daemon=True)
+        self.thread.start()
+
+    def _update(self) -> None:
+        while not self.stopped:
+            ok, frame = self.capture.read()
+            if not ok:
+                self.stopped = True
+                break
+            with self.lock:
+                self.latest_frame = frame
+
+    def is_opened(self) -> bool:
+        return self.capture.isOpened() and not self.stopped
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        with self.lock:
+            if self.latest_frame is None:
+                return False, None
+            return True, self.latest_frame.copy()
+
+    def release(self) -> None:
+        self.stopped = True
+        if self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        self.capture.release()
 
 
 def parse_source(value: str) -> int | str:
@@ -50,19 +97,33 @@ def main() -> None:
 
     frame_number = 0
 
-    while True:
-        capture = cv.VideoCapture(parse_source(config.camera.source))
+    window_name = "SCRFD Attendance Starter"
+    if config.camera.show_preview:
+        cv.namedWindow(window_name, cv.WINDOW_NORMAL)
+        cv.resizeWindow(window_name, 1280, 720)
 
-        if not capture.isOpened():
+    while True:
+        source_val = parse_source(config.camera.source)
+        stream = FreshRTSPStream(source_val)
+
+        # Wait up to 5 seconds for initial frame
+        start_wait = time.time()
+        while not stream.is_opened() and time.time() - start_wait < 5.0:
+            time.sleep(0.1)
+
+        if not stream.is_opened():
             print("Camera unavailable. Reconnecting...")
+            stream.release()
             time.sleep(config.camera.reconnect_delay_seconds)
             continue
 
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                print("Stream read failed. Reconnecting...")
-                break
+        print("Camera stream connected (Real-Time Mode).")
+
+        while stream.is_opened():
+            ok, frame = stream.read()
+            if not ok or frame is None:
+                time.sleep(0.01)
+                continue
 
             frame_number += 1
             if frame_number % config.camera.process_every_n_frames != 0:
@@ -117,6 +178,11 @@ def main() -> None:
                     confirmed_identities[track_id] = (
                         employee_id,
                         score,
+                    )
+                elif match.employee_id:
+                    confirmed_identities[track_id] = (
+                        match.employee_id,
+                        match.score,
                     )
 
                 last_seen[track_id] = time.monotonic()
@@ -212,14 +278,17 @@ def main() -> None:
                     (255, 255, 255),
                     2,
                 )
-                cv.imshow("SCRFD Attendance Starter", frame)
+                preview_w = 1152
+                preview_h = int(frame_height * (preview_w / frame_width))
+                preview_frame = cv.resize(frame, (preview_w, preview_h))
+                cv.imshow(window_name, preview_frame)
 
                 if cv.waitKey(1) & 0xFF == ord("q"):
-                    capture.release()
+                    stream.release()
                     cv.destroyAllWindows()
                     return
 
-        capture.release()
+        stream.release()
         time.sleep(config.camera.reconnect_delay_seconds)
 
 

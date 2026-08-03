@@ -1,0 +1,25 @@
+# Environment variables / Credentials
+.env
+.env.local
+*.env
+
+# Python Virtual Environments & Caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Model Checkpoints & Local Embeddings / Database
+.insightface/
+data/attendance.db
+data/embeddings.npz
+*.pt
+models/*.pt
+!models/README.txt
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,8 +1,29 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def _load_env(env_path: Path = Path(".env")) -> None:
+    if not env_path.exists():
+        return
+    with open(env_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ.setdefault(key.strip(), val.strip().strip("'\""))
+
+
+def _resolve_env_str(val: Any) -> Any:
+    if isinstance(val, str):
+        if val.startswith("${") and val.endswith("}"):
+            var_name = val[2:-1]
+            return os.getenv(var_name, "0")
+        return os.getenv(val, val)
+    return val
 
 
 @dataclass(slots=True)
@@ -55,12 +76,17 @@ class AppConfig:
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
+    _load_env()
+
     data: dict[str, Any]
     with open(path, "r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
 
+    camera_data = data["camera"].copy()
+    camera_data["source"] = str(_resolve_env_str(camera_data["source"]))
+
     return AppConfig(
-        camera=CameraConfig(**data["camera"]),
+        camera=CameraConfig(**camera_data),
         person=PersonConfig(**data["person_detection"]),
         face=FaceConfig(**data["face"]),
         attendance=AttendanceConfig(**data["attendance"]),
