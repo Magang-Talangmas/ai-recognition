@@ -323,14 +323,6 @@ def main() -> None:
                 last_seen.pop(track_id, None)
 
             if config.camera.show_preview:
-                cv.line(
-                    frame,
-                    (0, line_y),
-                    (frame_width, line_y),
-                    (255, 255, 255),
-                    2,
-                )
-
                 if not window_initialized:
                     cv.namedWindow("SCRFD Attendance Starter", cv.WINDOW_NORMAL)
                     cv.resizeWindow("SCRFD Attendance Starter", frame_width, frame_height)
