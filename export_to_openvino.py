@@ -37,8 +37,8 @@ MODELS_TO_CONVERT = [
         "name":        "SCRFD Face Detector",
         "onnx":        "det_10g.onnx",
         "input_name":  "input.1",
-        "input_shape": [1, 3, 640, 640],
-        "description": "SCRFD-10G — static 640×640",
+        "input_shape": [1, 3, 320, 320],   # turun dari 640: ~2-3x speedup pada CPU
+        "description": "SCRFD-10G — static 320×320",
     },
     {
         "name":        "ArcFace Recognition",

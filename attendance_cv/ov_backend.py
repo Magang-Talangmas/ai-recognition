@@ -10,7 +10,6 @@ Provides:
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -94,6 +93,7 @@ class OVSession:
 
         self._compiled: CompiledModel = core.compile_model(model, device)
 
+
         # Cache input / output descriptors once
         self._inputs = [
             _NodeInfo(
@@ -107,10 +107,19 @@ class OVSession:
             for out in self._compiled.outputs
         ]
 
-        # Map from output name → compiled output tensor for fast lookup
-        self._out_map = {
-            out.get_any_name(): out for out in self._compiled.outputs
-        }
+        # Map from all output names/aliases → compiled output tensor for fast lookup
+        self._out_map: dict[str, Any] = {}
+        for idx, out in enumerate(self._compiled.outputs):
+            try:
+                for name in out.names:
+                    self._out_map[name] = out
+            except Exception:
+                pass
+            try:
+                self._out_map[out.get_any_name()] = out
+            except Exception:
+                pass
+            self._out_map[str(idx)] = out
 
     # ------------------------------------------------------------------
     # onnxruntime-compatible API
@@ -141,7 +150,20 @@ class OVSession:
         result = self._compiled(input_feed)
 
         if output_names:
-            return [np.array(result[self._out_map[n]]) for n in output_names]
+            outs = []
+            for n in output_names:
+                if n in self._out_map:
+                    outs.append(np.array(result[self._out_map[n]]))
+                else:
+                    found = False
+                    for out in self._compiled.outputs:
+                        if n in out.names:
+                            outs.append(np.array(result[out]))
+                            found = True
+                            break
+                    if not found:
+                        raise KeyError(f"Output name '{n}' not found in OpenVINO outputs: {list(self._out_map.keys())}")
+            return outs
 
         # Return in output declaration order
         return [np.array(result[out]) for out in self._compiled.outputs]
@@ -151,35 +173,21 @@ class OVSession:
 # Public helper — patch a fully-prepared FaceAnalysis app
 # ---------------------------------------------------------------------------
 
-# Static input shapes per known InsightFace model role
-_SHAPE_OVERRIDES: dict[str, dict[str, list[int]]] = {
-    # SCRFD detection: 1 × C × H × W  (batch 1, static 640×640)
-    "detection": {"input.1": [1, 3, 640, 640]},
-    # ArcFace recognition: 1 × C × 112 × 112
-    "recognition": {"input.1": [1, 3, 112, 112]},
-}
-
-# Fallback by filename fragment
-_FILENAME_SHAPES: dict[str, dict[str, list[int]]] = {
-    "det_10g": {"input.1": [1, 3, 640, 640]},
-    "w600k_r50": {"input.1": [1, 3, 112, 112]},
-}
-
-
 def _guess_shape_override(model_obj: Any) -> dict[str, list[int]] | None:
-    """Attempt to determine correct static input shape for a model."""
-    # Try by taskname attribute
+    """Attempt to determine correct static input shape for a model dynamically."""
     task = getattr(model_obj, "taskname", None)
-    if task and task in _SHAPE_OVERRIDES:
-        return _SHAPE_OVERRIDES[task]
+    model_file = str(getattr(model_obj, "model_file", "")).lower()
 
-    # Try by model file path
-    model_file = getattr(model_obj, "model_file", None)
-    if model_file:
-        stem = Path(model_file).stem.lower()
-        for frag, shapes in _FILENAME_SHAPES.items():
-            if frag in stem:
-                return shapes
+    # SCRFD Detection model
+    if task == "detection" or "det" in model_file:
+        input_size = getattr(model_obj, "input_size", None)
+        if input_size is not None and len(input_size) == 2:
+            return {"input.1": [1, 3, int(input_size[1]), int(input_size[0])]}
+        return {"input.1": [1, 3, 640, 640]}
+
+    # ArcFace Recognition model (always 112x112)
+    if task == "recognition" or "w600k" in model_file:
+        return {"input.1": [1, 3, 112, 112]}
 
     return None
 
