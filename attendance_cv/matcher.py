@@ -54,3 +54,30 @@ class FaceMatcher:
             best_score,
             margin,
         )
+
+    def match_batch(self, embeddings: list[np.ndarray]) -> list[MatchResult]:
+        if not embeddings:
+            return []
+        
+        matrix = np.stack(embeddings).astype(np.float32)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix /= np.maximum(norms, 1e-12)
+
+        # Batch matrix multiplication: (N_templates, D) @ (D, Batch_Size) -> (N_templates, Batch_Size)
+        all_scores = self.templates @ matrix.T
+        results: list[MatchResult] = []
+
+        for b in range(all_scores.shape[1]):
+            scores = all_scores[:, b]
+            order = np.argsort(scores)[::-1]
+            best_idx = int(order[0])
+            best_score = float(scores[best_idx])
+            second_score = float(scores[order[1]]) if len(order) > 1 else -1.0
+            margin = best_score - second_score
+
+            if best_score < self.config.match_threshold or margin < self.config.match_margin:
+                results.append(MatchResult(None, best_score, margin))
+            else:
+                results.append(MatchResult(str(self.employee_ids[best_idx]), best_score, margin))
+
+        return results
