@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -323,6 +324,10 @@ class AsyncInferenceWorker:
 
 
 def main() -> None:
+    # CPU Core Thread Optimization
+    num_cores = os.cpu_count() or 4
+    cv.setNumThreads(num_cores)
+
     config = load_config()
 
     reader = RTSPReader(
@@ -333,7 +338,7 @@ def main() -> None:
     print("Waiting for first frame from RTSP stream...")
     while not reader.is_ready():
         time.sleep(0.05)
-    print("Stream connected. Initializing Fast Face Inference Pipeline.")
+    print(f"Stream connected. Initializing Fast Face Inference Pipeline (CPU Threads: {num_cores}).")
 
     worker = AsyncInferenceWorker(config)
 
@@ -350,7 +355,12 @@ def main() -> None:
                 continue
 
             now = time.monotonic()
-            worker.submit_frame(packet)
+
+            # Subsample frame processing according to process_every_n_frames setting
+            skip_ratio = max(1, config.camera.process_every_n_frames)
+            if packet.frame_id % skip_ratio == 0:
+                worker.submit_frame(packet)
+
             state = worker.get_detection_state()
 
             capture_to_display_latency_ms = (now - packet.capture_time) * 1000.0
@@ -362,11 +372,35 @@ def main() -> None:
                 display_fps_timer = now
 
             if config.camera.show_preview:
-                frame = packet.frame.copy()
+                # Zero-copy frame assignment (draw directly on preview buffer without full RAM copy)
+                frame = packet.frame
                 frame_h, frame_w = frame.shape[:2]
 
-                # Render Face Bounding Boxes & Identity Labels
+                # Pass 1 — deduplicate by face_id (1 entry per tracked face).
+                seen_face_ids: dict[int, FaceRenderInfo] = {}
                 for face_info in state.faces:
+                    fid = face_info.face_id
+                    existing = seen_face_ids.get(fid)
+                    if existing is None or face_info.score > existing.score:
+                        seen_face_ids[fid] = face_info
+
+                # Pass 2 — deduplicate identified faces by employee_id (class).
+                # If two tracks both match "gibran", keep only the highest-scoring one.
+                # UNKNOWN faces are all kept (each is a different physical person).
+                best_per_identity: dict[str, FaceRenderInfo] = {}
+                unknowns: list[FaceRenderInfo] = []
+                for face_info in seen_face_ids.values():
+                    if face_info.employee_id:
+                        existing = best_per_identity.get(face_info.employee_id)
+                        if existing is None or face_info.score > existing.score:
+                            best_per_identity[face_info.employee_id] = face_info
+                    else:
+                        unknowns.append(face_info)
+
+                faces_to_render = list(best_per_identity.values()) + unknowns
+
+                # Render Face Bounding Box & Identity Label — 1 label per detected person
+                for face_info in faces_to_render:
                     fx1, fy1, fx2, fy2 = face_info.bbox.astype(int)
                     label = face_info.employee_id or "UNKNOWN"
                     score = face_info.score

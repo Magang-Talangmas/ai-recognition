@@ -15,16 +15,18 @@ face:
   model_pack: "buffalo_l"     # contains SCRFD detector + recognition model
   model_root: ".insightface"
   providers:
-    - "CUDAExecutionProvider"
+    - "DmlExecutionProvider"
     - "CPUExecutionProvider"
+  backend: "openvino"         # "onnxruntime" | "openvino"
+  openvino_device: "AUTO"     # AUTO, CPU, GPU.0, GPU.1
   detection_size: 640
   detection_threshold: 0.50
-  min_face_size: 24            # lowered to 24: captures small/distant faces in CCTV (30-38px)
-  blur_threshold: 25.0
-  match_threshold: 0.22        # lowered to 0.22 based on live RTSP score distribution (0.22-0.45)
-  match_margin: 0.03           # lowered margin to prevent rejecting valid borderline matches
+  min_face_size: 28            # raised from 24: filters tiny low-quality faces
+  blur_threshold: 50.0         # raised from 25: skips blurry faces with noisy embeddings
+  match_threshold: 0.38        # raised from 0.22: safer confidence floor for ArcFace cosine similarity
+  match_margin: 0.07           # raised from 0.03: wider gap required between 1st and 2nd best match
   vote_window: 5
-  votes_required: 2            # reduced required votes to 2 for faster, stable confirmation
+  votes_required: 3            # raised from 2: 3/5 majority needed to confirm identity
 
 attendance:
   line_y_ratio: 0.62           # raised slightly from 0.55

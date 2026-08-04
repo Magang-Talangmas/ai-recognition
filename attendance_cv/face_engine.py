@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2 as cv
 import numpy as np
@@ -20,6 +22,7 @@ class FaceResult:
 
 class FaceEngine:
     def __init__(self, config: FaceConfig) -> None:
+        cv.setNumThreads(os.cpu_count() or 4)
         self.config = config
         self.app = FaceAnalysis(
             name=config.model_pack,
@@ -33,6 +36,31 @@ class FaceEngine:
             det_thresh=config.detection_threshold,
             det_size=(config.detection_size, config.detection_size),
         )
+
+        # ----------------------------------------------------------------
+        # OpenVINO backend — replace onnxruntime sessions after prepare()
+        # ----------------------------------------------------------------
+        if config.backend == "openvino":
+            from attendance_cv.ov_backend import patch_app_with_openvino
+            # IR models live alongside the ONNX pack, in a _ov sibling dir
+            onnx_dir  = Path(config.model_root) / "models" / config.model_pack
+            ir_dir    = Path(config.model_root) / "models" / (config.model_pack + "_ov")
+            status    = patch_app_with_openvino(
+                self.app,
+                ir_model_dir=ir_dir,
+                device=config.openvino_device,
+            )
+            ok = sum(1 for s in status.values() if s != "skipped")
+            print(
+                f"[FaceEngine] OpenVINO backend active — "
+                f"{ok}/{len(status)} models patched on device={config.openvino_device}"
+            )
+        else:
+            print(
+                f"[FaceEngine] Using onnxruntime backend "
+                f"(providers={config.providers})"
+            )
+
 
     def detect(self, frame: np.ndarray) -> list[FaceResult]:
         output: list[FaceResult] = []
@@ -116,4 +144,5 @@ class FaceEngine:
         if image.size == 0:
             return 0.0
         gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-        return float(cv.Laplacian(gray, cv.CV_64F).var())
+        # Use single-precision CV_32F float Laplacian for faster vector unit operations (AVX2)
+        return float(cv.Laplacian(gray, cv.CV_32F).var())

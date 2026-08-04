@@ -69,6 +69,10 @@ class FaceConfig:
     match_margin: float
     vote_window: int
     votes_required: int
+    # OpenVINO inference backend ("onnxruntime" | "openvino")
+    backend: str = "onnxruntime"
+    # OpenVINO device: AUTO, CPU, GPU.0, GPU.1 …
+    openvino_device: str = "AUTO"
 
 
 @dataclass(slots=True)
