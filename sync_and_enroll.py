@@ -58,7 +58,7 @@ def parse_cloudinary_credentials() -> dict[str, str] | None:
     cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME", "").strip()
     api_key = os.environ.get("CLOUDINARY_API_KEY", "").strip()
     api_secret = os.environ.get("CLOUDINARY_API_SECRET", "").strip()
-    folder = os.environ.get("CLOUDINARY_FOLDER", "employees").strip()
+    folder = os.environ.get("CLOUDINARY_FOLDER", "").strip()
 
     if cloud_name and api_key and api_secret:
         return {
@@ -80,14 +80,13 @@ def fetch_cloudinary_resources(creds: dict[str, str]) -> list[dict[str, Any]]:
 
     api_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/resources/image/upload"
     params: dict[str, Any] = {
-        "prefix": folder,
         "max_results": 500,
     }
-
-    all_resources: list[dict[str, Any]] = []
-    next_cursor = None
-
-    print(f"📡 Menghubungi Cloudinary ({cloud_name}) pada folder: '{folder}'...")
+    if folder:
+        params["prefix"] = folder
+        print(f"📡 Menghubungi Cloudinary ({cloud_name}) pada folder: '{folder}'...")
+    else:
+        print(f"📡 Menghubungi Cloudinary ({cloud_name}) pada root storage...")
 
     while True:
         if next_cursor:
