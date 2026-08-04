@@ -35,3 +35,10 @@ attendance:
   event_database: "data/attendance.db"
   embedding_file: "data/embeddings.npz"
   allow_insecure_no_liveness: true
+
+backend:
+  api_url: "${BACKEND_API_URL}"
+  api_key: "${ML_API_KEY}"
+  enabled: true
+  timeout: 4.0
+
