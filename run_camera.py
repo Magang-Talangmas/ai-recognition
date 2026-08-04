@@ -24,7 +24,8 @@ from attendance_cv.vision_utils import (
 @dataclass
 class FramePacket:
     frame: np.ndarray
-    capture_time: float
+    capture_time: float      # time.monotonic() — used for duration calculations
+    t_capture_wall: float    # time.time()      — absolute wall-clock at cap.read() return
     frame_id: int
 
 
@@ -42,6 +43,11 @@ class DetectionState:
     inference_time_ms: float = 0.0
     inference_fps: float = 0.0
     timestamp: float = 0.0
+    # Pipeline latency timestamps (all time.monotonic())
+    capture_time: float = 0.0        # when RTSPReader captured the frame
+    dequeue_time: float = 0.0        # when inference thread dequeued the frame
+    inference_done_time: float = 0.0 # when inference + matching finished
+    t_capture_wall: float = 0.0      # time.time() at cap.read() — absolute wall clock
 
 
 class RTSPReader:
@@ -75,7 +81,8 @@ class RTSPReader:
 
             while not self._stop_event.is_set():
                 ok, frame = cap.read()
-                capture_time = time.monotonic()
+                capture_time    = time.monotonic()  # for duration math
+                t_capture_wall  = time.time()       # absolute wall-clock at first frame touch
                 if not ok or frame is None:
                     print("Stream read failed. Reconnecting...")
                     break
@@ -84,6 +91,7 @@ class RTSPReader:
                 packet = FramePacket(
                     frame=frame,
                     capture_time=capture_time,
+                    t_capture_wall=t_capture_wall,
                     frame_id=self._frame_count,
                 )
                 with self._lock:
@@ -196,6 +204,7 @@ class AsyncInferenceWorker:
                 continue
 
             t_start = time.monotonic()
+            dequeue_time = t_start  # frame just came off the queue
             frame = packet.frame
             frame_height, frame_width = frame.shape[:2]
             line_y = int(frame_height * self.config.attendance.line_y_ratio)
@@ -316,6 +325,10 @@ class AsyncInferenceWorker:
                     inference_time_ms=inference_dur_ms,
                     inference_fps=self._last_fps,
                     timestamp=t_end,
+                    capture_time=packet.capture_time,
+                    dequeue_time=dequeue_time,
+                    inference_done_time=t_end,
+                    t_capture_wall=packet.t_capture_wall,
                 )
 
     def stop(self) -> None:
@@ -346,6 +359,7 @@ def main() -> None:
     display_fps_counter = 0
     display_fps_timer = time.monotonic()
     display_fps = 0.0
+    last_printed_state_ts = 0.0
 
     try:
         while True:
@@ -362,8 +376,6 @@ def main() -> None:
                 worker.submit_frame(packet)
 
             state = worker.get_detection_state()
-
-            capture_to_display_latency_ms = (now - packet.capture_time) * 1000.0
 
             display_fps_counter += 1
             if now - display_fps_timer >= 1.0:
@@ -419,6 +431,30 @@ def main() -> None:
                     )
 
                 # On-Screen HUD Performance Panel
+                # Compute true E2E latency from state timestamps (inference-frame reference).
+                # This is stable and accurate: state.capture_time is stamped at cap.read()
+                # in the reader thread; render_time is stamped immediately before imshow.
+                render_time = time.monotonic()
+                if state.capture_time > 0:
+                    from datetime import datetime
+                    queue_wait_ms  = (state.dequeue_time        - state.capture_time)        * 1000.0
+                    inference_ms   = (state.inference_done_time - state.dequeue_time)        * 1000.0
+                    render_wait_ms = (render_time               - state.inference_done_time) * 1000.0
+                    total_e2e_ms   = (render_time               - state.capture_time)        * 1000.0
+                    wall_ts        = datetime.fromtimestamp(state.t_capture_wall).strftime("%H:%M:%S.%f")[:-3]
+                    
+                    if state.timestamp != last_printed_state_ts:
+                        print(
+                            f"[{wall_ts}] "
+                            f"cap.read->queue: {queue_wait_ms:.1f}ms | "
+                            f"Inference: {inference_ms:.1f}ms | "
+                            f"Render wait: {render_wait_ms:.1f}ms | "
+                            f"E2E: {total_e2e_ms:.1f}ms"
+                        )
+                        last_printed_state_ts = state.timestamp
+                else:
+                    total_e2e_ms = 0.0
+
                 hud_bg_color = (0, 0, 0)
                 cv.rectangle(frame, (10, 10), (450, 100), hud_bg_color, -1)
                 cv.rectangle(frame, (10, 10), (450, 100), (100, 100, 100), 1)
@@ -432,7 +468,7 @@ def main() -> None:
                     (20, 56), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1,
                 )
                 cv.putText(
-                    frame, f"CAP->DISPLAY LAG : {capture_to_display_latency_ms:.1f} ms",
+                    frame, f"CAP->DISPLAY LAG : {total_e2e_ms:.1f} ms",
                     (20, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2,
                 )
 

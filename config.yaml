@@ -1,7 +1,7 @@
 camera:
   source: "${CAMERA_SOURCE}"        # set in .env file
   camera_id: "main-entrance"
-  process_every_n_frames: 2
+  process_every_n_frames: 20
   reconnect_delay_seconds: 3
   show_preview: true
 
