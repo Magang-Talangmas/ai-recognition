@@ -1,11 +1,17 @@
 """
 Sync Employee Photos from Cloudinary & Auto-Enroll Face Embeddings.
 
+Features:
+- Parses 'NamaPanjang_TIME' from Cloudinary public_id -> data/enroll/NamaPanjang/TIME.ext
+- Smart incremental sync: skips photos that already exist locally (saves bandwidth & time)
+- Automatically triggers ArcFace OpenVINO embedding generation when new photos are detected
+- Can be run manually or triggered via scheduled task / cron
+
 Usage:
-  python sync_and_enroll.py              # Sync photos from Cloudinary + generate embeddings.npz
+  python sync_and_enroll.py              # Smart sync from Cloudinary + generate embeddings if needed
   python sync_and_enroll.py --sync-only  # Only download/update photos from Cloudinary
-  python sync_and_enroll.py --enroll-only# Only generate embeddings.npz from local folder
-  python sync_and_enroll.py --force      # Re-download all photos even if they exist locally
+  python sync_and_enroll.py --enroll-only# Force rebuild embeddings.npz from local folder
+  python sync_and_enroll.py --force      # Force re-download all photos & rebuild embeddings
 """
 
 import argparse
@@ -30,6 +36,11 @@ import requests
 
 from attendance_cv.config import load_config
 from attendance_cv.face_engine import FaceEngine
+
+
+def sanitize_folder_name(name: str) -> str:
+    """Sanitize folder name to be safe on all operating systems."""
+    return re.sub(r'[\\/*?:"<>|]', "_", name).strip()
 
 
 def parse_cloudinary_credentials() -> dict[str, str] | None:
@@ -106,29 +117,34 @@ def fetch_cloudinary_resources(creds: dict[str, str]) -> list[dict[str, Any]]:
     return all_resources
 
 
-def extract_employee_id_from_public_id(public_id: str, root_folder: str) -> tuple[str, str]:
+def extract_employee_and_filename(public_id: str, root_folder: str) -> tuple[str, str]:
     """
-    Extract (employee_id, filename) from Cloudinary public_id.
-    Example: 'employees/EMP001/face1' -> ('EMP001', 'face1')
-             'employees/akmalShaumNadzirin/01' -> ('akmalShaumNadzirin', '01')
-             'EMP001_photo1' -> ('EMP001', 'photo1')
+    Extract (NamaPanjang, TIME) from Cloudinary public_id.
+
+    Supported patterns:
+      1. 'employees/NamaPanjang_TIME' -> ('NamaPanjang', 'TIME')
+      2. 'employees/NamaPanjang/TIME' -> ('NamaPanjang', 'TIME')
+      3. 'NamaPanjang_TIME'           -> ('NamaPanjang', 'TIME')
     """
-    clean_id = public_id.removeprefix(root_folder).strip("/")
-    parts = clean_id.split("/")
+    clean_id = public_id
+    if root_folder and clean_id.startswith(root_folder):
+        clean_id = clean_id[len(root_folder):].lstrip("/")
 
-    if len(parts) >= 2:
-        employee_id = parts[0]
-        filename = "_".join(parts[1:])
-    else:
-        # Fallback if flat structure: e.g. EMP001_photo1
-        match = re.match(r"^([^_]+)_(.+)$", clean_id)
-        if match:
-            employee_id, filename = match.groups()
-        else:
-            employee_id = clean_id
-            filename = "default"
+    # Pattern A: if path contains subfolder (NamaPanjang/TIME)
+    if "/" in clean_id:
+        parts = clean_id.split("/")
+        employee_name = sanitize_folder_name(parts[0])
+        time_part = "_".join(parts[1:])
+        return employee_name, time_part
 
-    return employee_id, filename
+    # Pattern B: 'NamaPanjang_TIME' (split by the rightmost underscore)
+    if "_" in clean_id:
+        name_part, _, time_part = clean_id.rpartition("_")
+        employee_name = sanitize_folder_name(name_part)
+        return employee_name, time_part
+
+    # Fallback
+    return sanitize_folder_name(clean_id), "photo"
 
 
 def download_cloudinary_photos(
@@ -136,10 +152,17 @@ def download_cloudinary_photos(
     root_folder: str,
     target_dir: Path,
     force: bool = False,
-) -> int:
-    """Download images from Cloudinary and organize into target_dir/<employee_id>/."""
+) -> tuple[int, int, set[str]]:
+    """
+    Download images from Cloudinary and organize into target_dir/<NamaPanjang>/<TIME>.<ext>.
+
+    Returns:
+      (downloaded_count, skipped_count, updated_employee_names)
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
     downloaded_count = 0
+    skipped_count = 0
+    updated_employees: set[str] = set()
 
     for res in resources:
         public_id = res.get("public_id", "")
@@ -149,13 +172,15 @@ def download_cloudinary_photos(
         if not public_id or not secure_url:
             continue
 
-        employee_id, filename = extract_employee_id_from_public_id(public_id, root_folder)
-        emp_dir = target_dir / employee_id
+        employee_name, time_part = extract_employee_and_filename(public_id, root_folder)
+        emp_dir = target_dir / employee_name
         emp_dir.mkdir(parents=True, exist_ok=True)
 
-        local_file = emp_dir / f"{filename}.{file_format}"
+        local_file = emp_dir / f"{time_part}.{file_format}"
 
+        # Smart skip if already downloaded locally
         if local_file.exists() and not force:
+            skipped_count += 1
             continue
 
         try:
@@ -164,13 +189,14 @@ def download_cloudinary_photos(
                 with open(local_file, "wb") as f:
                     f.write(img_resp.content)
                 downloaded_count += 1
-                print(f"  ⬇️ Downloaded: {employee_id}/{local_file.name}")
+                updated_employees.add(employee_name)
+                print(f"  ⬇️ [NEW] {employee_name} -> {local_file.name}")
             else:
                 print(f"  ⚠️ Gagal download {secure_url}: HTTP {img_resp.status_code}")
         except Exception as err:
             print(f"  ❌ Error downloading {secure_url}: {err}")
 
-    return downloaded_count
+    return downloaded_count, skipped_count, updated_employees
 
 
 def build_face_embeddings(
@@ -202,7 +228,7 @@ def build_face_embeddings(
                 images.append(image)
 
         if not images:
-            print(f"  ⚠️ SKIP {employee_dir.name}: tidak ada file foto valid")
+            print(f"  ⚠️ SKIP [{employee_dir.name}]: tidak ada file foto valid")
             continue
 
         try:
@@ -234,7 +260,7 @@ def main() -> None:
     parser.add_argument(
         "--sync-only",
         action="store_true",
-        help="Hanya download foto dari Cloudinary tanpa membuat embedding",
+        help="Hanya download foto baru dari Cloudinary tanpa membuat embedding",
     )
     parser.add_argument(
         "--enroll-only",
@@ -244,7 +270,7 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Paksa download ulang semua foto dari Cloudinary",
+        help="Paksa download ulang semua foto & paksa rebuild embedding",
     )
     args = parser.parse_args()
 
@@ -259,6 +285,10 @@ def main() -> None:
     print("🚀 TALANGMAS ATTENDANCE - CLOUD SYNC & FACE ENROLLMENT")
     print("=" * 65)
 
+    downloaded = 0
+    skipped = 0
+    needs_embedding = False
+
     if not args.enroll_only:
         creds = parse_cloudinary_credentials()
         if not creds:
@@ -267,30 +297,44 @@ def main() -> None:
                 "(CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET)."
             )
             print("➡️ Melanjutkan proses enrollment dari file lokal yang ada...\n")
+            needs_embedding = True
         else:
             try:
                 resources = fetch_cloudinary_resources(creds)
-                downloaded = download_cloudinary_photos(
+                downloaded, skipped, updated_employees = download_cloudinary_photos(
                     resources=resources,
                     root_folder=creds["folder"],
                     target_dir=enroll_dir,
                     force=args.force,
                 )
-                print(f"✅ Sync Selesai: {downloaded} foto baru/diperbarui.")
+                print(f"📊 Ringkasan Sync: {downloaded} foto baru diunduh, {skipped} foto sudah ada (dilewati).")
+                if downloaded > 0:
+                    needs_embedding = True
             except Exception as err:
                 print(f"❌ Terjadi kesalahan saat sync Cloudinary: {err}")
                 print("➡️ Mencoba melanjutkan dengan data lokal yang sudah ada...")
+                needs_embedding = True
+    else:
+        needs_embedding = True
+
+    # Check if embedding file exists and whether we need to re-compute
+    if not output_npz.exists() or args.force:
+        needs_embedding = True
 
     if not args.sync_only:
-        try:
-            total_enrolled = build_face_embeddings(
-                enroll_root=enroll_dir,
-                output_path=output_npz,
-                face_config=config.face,
-            )
-        except Exception as err:
-            print(f"❌ Error saat enrollment wajah: {err}")
-            sys.exit(1)
+        if needs_embedding:
+            try:
+                build_face_embeddings(
+                    enroll_root=enroll_dir,
+                    output_path=output_npz,
+                    face_config=config.face,
+                )
+            except Exception as err:
+                print(f"❌ Error saat enrollment wajah: {err}")
+                sys.exit(1)
+        else:
+            print(f"\n⚡ Semua foto sudah up-to-date di lokal & '{output_npz.name}' sudah siap.")
+            print("   (Tidak perlu rebuild embedding. Gunakan --force jika ingin kalkulasi ulang).")
 
     duration = time.time() - start_time
     print("=" * 65)
