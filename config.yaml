@@ -15,7 +15,6 @@ face:
   model_pack: "buffalo_l"     # contains SCRFD detector + recognition model
   model_root: ".insightface"
   providers:
-    - "TensorRTExecutionProvider"
     - "CUDAExecutionProvider"
     - "CPUExecutionProvider"
   provider_options:
@@ -24,7 +23,7 @@ face:
     trt_engine_cache_enable: true
   detection_size: 416
   detection_threshold: 0.35
-  min_face_size: 20
+  min_face_size: 50             # Skip faces smaller than 50px — reduces inference on small/distant faces
   blur_threshold: 10.0
   match_threshold: 0.35
   match_margin: 0.02

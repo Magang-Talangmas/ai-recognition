@@ -13,6 +13,20 @@ from attendance_cv.config import load_config
 from attendance_cv.face_engine import FaceEngine
 from attendance_cv.matcher import FaceMatcher
 
+import site
+
+# Register CUDA DLL directories for ONNX Runtime GPU on Windows
+try:
+    for p in site.getsitepackages():
+        for sub in ["torch", "nvidia"]:
+            target_dir = os.path.join(p, sub)
+            if os.path.isdir(target_dir):
+                for root, _, files in os.walk(target_dir):
+                    if any(f.endswith(".dll") for f in files):
+                        os.add_dll_directory(root)
+except Exception:
+    pass
+
 # Set FFmpeg options for zero-latency real-time RTSP capture
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "rtsp_transport;tcp|max_delay;500000|buffer_size;1024000|flags;low_delay"
@@ -147,11 +161,12 @@ class AsyncAIWorker:
 
             t_start = time.time()
 
-            # 1. YOLOv10 Fast Person Detection (.predict)
+            # 1. YOLOv10 Fast Person Detection (.predict on GPU CUDA:0)
             result = self.person_model.predict(
                 frame,
                 classes=[0],
                 conf=self.config.person.confidence,
+                device=0,
                 verbose=False,
             )[0]
 
