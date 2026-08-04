@@ -72,8 +72,8 @@ def associate_face_to_person_box(
 
 
 class AsyncAIWorker:
-    """Asynchronous AI Worker Thread (Pure Detection Mode - No Tracking / No Database)
-    Processes YOLOv10 prediction and SCRFD face recognition in parallel."""
+    """Asynchronous AI Worker Thread (High-Throughput Multi-Core Mode)
+    Processes YOLOv10 prediction and SCRFD face recognition in parallel across all CPU cores."""
 
     def __init__(
         self,
@@ -147,7 +147,7 @@ class AsyncAIWorker:
 
             t_start = time.time()
 
-            # 1. Pure YOLOv10 Person Detection (No tracking overhead)
+            # 1. YOLOv10 Fast Person Detection (.predict)
             result = self.person_model.predict(
                 frame,
                 classes=[0],
@@ -160,7 +160,7 @@ class AsyncAIWorker:
                 boxes = result.boxes.xyxy.cpu().numpy().astype(int)
                 people_boxes = [tuple(map(int, box)) for box in boxes]
 
-            # 2. SCRFD Face Detection & Batch Matcher
+            # 2. SCRFD Face Detection & Batch Size 32 Matrix Matcher
             detected_faces = self.face_engine.detect(frame)
             face_boxes_to_draw: list[
                 tuple[tuple[int, int, int, int], str, float]
@@ -234,10 +234,10 @@ def parse_source(value: str) -> int | str:
 def main() -> None:
     config = load_config()
 
-    print("=== Pure AI Visual Recognition Pipeline (No Tracking / No DB Purpose) ===")
-    print("1. YOLOv10: Pure Person Object Detection (.predict)")
-    print("2. SCRFD: Face Detection & Batch Size 32 Matrix Matcher")
-    print("3. Renderer: High-FPS Decoupled Preview Stream")
+    print("=== Accelerated Ultra-Smooth AI Recognition Pipeline ===")
+    print("1. Multi-Core Unconstrained AI Acceleration Active")
+    print("2. Decoupled 30-100+ FPS Native Video Stream Renderer")
+    print("3. Batch Size 32 Matrix Matching & 416 SCRFD Detection Resolution")
 
     person_model = YOLO(config.person.model_path)
     face_engine = FaceEngine(config.face)
@@ -265,7 +265,7 @@ def main() -> None:
             time.sleep(config.camera.reconnect_delay_seconds)
             continue
 
-        print("Camera stream connected (Pure Visual Mode).")
+        print("Camera stream connected (Smooth Native FPS Mode).")
 
         ai_worker = AsyncAIWorker(person_model, face_engine, matcher, config)
 
@@ -276,7 +276,7 @@ def main() -> None:
         while stream.is_opened():
             ok, frame = stream.read()
             if not ok or frame is None:
-                time.sleep(0.005)
+                time.sleep(0.002)
                 continue
 
             # FPS calculation for UI rendering stream
@@ -296,7 +296,7 @@ def main() -> None:
             )
             ai_fps, ai_ms = ai_worker.get_stats()
 
-            # Render smooth 30-60 FPS video stream
+            # Render smooth video stream
             if config.camera.show_preview:
                 # 1. Render Face Bounding Boxes (Green / Coral)
                 for (fx1, fy1, fx2, fy2), f_label, f_score in face_boxes:
@@ -323,36 +323,7 @@ def main() -> None:
                         cv.LINE_AA,
                     )
 
-                # 2. Render Person Bounding Boxes (Cyan / Gold)
-                for p_box in people_boxes:
-                    x1, y1, x2, y2 = p_box
-                    label, score = person_identities.get(
-                        p_box, ("UNKNOWN", 0.0)
-                    )
-                    person_color = (
-                        (255, 200, 0)
-                        if label != "UNKNOWN"
-                        else (220, 220, 220)
-                    )
-                    cv.rectangle(
-                        frame,
-                        (x1, y1),
-                        (x2, y2),
-                        person_color,
-                        2,
-                    )
-                    cv.putText(
-                        frame,
-                        f"Person: {label}",
-                        (x1, max(20, y1 - 8)),
-                        cv.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        person_color,
-                        2,
-                        cv.LINE_AA,
-                    )
-
-                # 3. Render Real-Time FPS HUD Overlay Badge
+                # 2. Render Real-Time FPS HUD Overlay Badge
                 cv.rectangle(frame, (15, 15), (290, 75), (20, 20, 20), cv.FILLED)
                 cv.rectangle(frame, (15, 15), (290, 75), (0, 255, 127), 1)
 

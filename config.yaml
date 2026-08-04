@@ -22,7 +22,7 @@ face:
     trt_fp16_enable: true
     trt_max_workspace_size: 2147483648
     trt_engine_cache_enable: true
-  detection_size: 640
+  detection_size: 416
   detection_threshold: 0.35
   min_face_size: 20
   blur_threshold: 10.0

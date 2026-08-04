@@ -71,6 +71,16 @@ class AttendanceConfig:
 
 
 @dataclass(slots=True)
+class PerformanceConfig:
+    target_fps: int = 100
+    intra_op_threads: int = 6
+    inter_op_threads: int = 2
+    opencv_threads: int = 2
+    memory_pool_mb: int = 256
+    enable_affinity: bool = True
+
+
+@dataclass(slots=True)
 class AppConfig:
     camera: CameraConfig
     person: PersonConfig
