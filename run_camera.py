@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import queue
 import threading
@@ -337,6 +338,12 @@ class AsyncInferenceWorker:
 
 
 def main() -> None:
+    if os.name == "nt":
+        try:
+            ctypes.windll.winmm.timeBeginPeriod(1)
+        except Exception:
+            pass
+
     # CPU Core Thread Optimization
     num_cores = os.cpu_count() or 4
     cv.setNumThreads(num_cores)
@@ -370,7 +377,7 @@ def main() -> None:
 
             now = time.monotonic()
 
-            # Subsample frame processing according to process_every_n_frames setting
+
             skip_ratio = max(1, config.camera.process_every_n_frames)
             if packet.frame_id % skip_ratio == 0:
                 worker.submit_frame(packet)
@@ -419,18 +426,37 @@ def main() -> None:
 
                     box_color = (0, 255, 0) if label != "UNKNOWN" else (0, 215, 255)
 
-                    cv.rectangle(frame, (fx1, fy1), (fx2, fy2), box_color, 2)
+                    # Thin bounding box (thickness 1 for crisp look on Substream)
+                    cv.rectangle(frame, (fx1, fy1), (fx2, fy2), box_color, 1)
+
+                    # Compact text badge with dark background
+                    text = f"{label} ({score:.2f})"
+                    font_scale = 0.38
+                    (tw, th), _ = cv.getTextSize(
+                        text, cv.FONT_HERSHEY_SIMPLEX, font_scale, 1
+                    )
+                    ty = max(th + 6, fy1 - 4)
+                    
+                    # Background pill behind label for clear readability
+                    cv.rectangle(
+                        frame,
+                        (fx1, ty - th - 3),
+                        (fx1 + tw + 6, ty + 2),
+                        (0, 0, 0),
+                        -1,
+                    )
                     cv.putText(
                         frame,
-                        f"{label} ({score:.2f})",
-                        (fx1, max(20, fy1 - 8)),
+                        text,
+                        (fx1 + 3, ty - 1),
                         cv.FONT_HERSHEY_SIMPLEX,
-                        0.55,
+                        font_scale,
                         box_color,
-                        2,
+                        1,
+                        cv.LINE_AA,
                     )
 
-                # On-Screen HUD Performance Panel
+                # On-Screen HUD Performance Panel (Compact & Sleek)
                 # Compute true E2E latency from state timestamps (inference-frame reference).
                 # This is stable and accurate: state.capture_time is stamped at cap.read()
                 # in the reader thread; render_time is stamped immediately before imshow.
@@ -455,21 +481,22 @@ def main() -> None:
                 else:
                     total_e2e_ms = 0.0
 
-                hud_bg_color = (0, 0, 0)
-                cv.rectangle(frame, (10, 10), (450, 100), hud_bg_color, -1)
-                cv.rectangle(frame, (10, 10), (450, 100), (100, 100, 100), 1)
+                # Compact HUD Panel
+                hud_w, hud_h = 270, 64
+                cv.rectangle(frame, (8, 8), (8 + hud_w, 8 + hud_h), (15, 15, 15), -1)
+                cv.rectangle(frame, (8, 8), (8 + hud_w, 8 + hud_h), (80, 80, 80), 1)
 
                 cv.putText(
-                    frame, f"LIVE DISPLAY FPS : {display_fps:.1f} FPS (Target: 30)",
-                    (20, 32), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2,
+                    frame, f"LIVE DISPLAY FPS : {display_fps:.1f} FPS",
+                    (16, 24), cv.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 0), 1, cv.LINE_AA,
                 )
                 cv.putText(
                     frame, f"INFERENCE SPEED  : {state.inference_time_ms:.1f} ms ({state.inference_fps:.1f} FPS)",
-                    (20, 56), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1,
+                    (16, 42), cv.FONT_HERSHEY_SIMPLEX, 0.36, (0, 230, 255), 1, cv.LINE_AA,
                 )
                 cv.putText(
                     frame, f"CAP->DISPLAY LAG : {total_e2e_ms:.1f} ms",
-                    (20, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2,
+                    (16, 60), cv.FONT_HERSHEY_SIMPLEX, 0.36, (0, 230, 255), 1, cv.LINE_AA,
                 )
 
                 if not window_initialized:
@@ -482,12 +509,16 @@ def main() -> None:
                 if cv.waitKey(1) & 0xFF == ord("q"):
                     break
 
-            time.sleep(0.015)
 
     finally:
         worker.stop()
         reader.stop()
         cv.destroyAllWindows()
+        if os.name == "nt":
+            try:
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

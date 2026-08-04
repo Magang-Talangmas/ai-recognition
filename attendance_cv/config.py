@@ -18,8 +18,10 @@ def _load_dotenv(env_path: Path = Path(".env")) -> None:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
-            value = value.strip()
-            if key and key not in os.environ:
+            value = value.strip().strip("'\"")
+            if key:
+                # Expand any references to previously loaded variables
+                value = _expand_env(value)
                 os.environ[key] = value
 
 
