@@ -1,7 +1,7 @@
 camera:
   source: "${CAMERA_SOURCE}"        # set in .env file
   camera_id: "main-entrance"
-  process_every_n_frames: 20
+  process_every_n_frames: 5
   reconnect_delay_seconds: 3
   show_preview: true
 
@@ -17,7 +17,7 @@ face:
   providers:
     - "DmlExecutionProvider"
     - "CPUExecutionProvider"
-  backend: "openvino"         # "onnxruntime" | "openvino"
+  backend: "onnxruntime"         # "onnxruntime" | "openvino"
   openvino_device: "AUTO"     # AUTO, CPU, GPU.0, GPU.1
   detection_size: 640
   detection_threshold: 0.50

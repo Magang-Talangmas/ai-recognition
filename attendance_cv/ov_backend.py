@@ -107,10 +107,13 @@ class OVSession:
             for out in self._compiled.outputs
         ]
 
-        # Map from output name → compiled output tensor for fast lookup
-        self._out_map = {
-            out.get_any_name(): out for out in self._compiled.outputs
-        }
+        # Map from output name → compiled output tensor for fast lookup.
+        # We must map ALL names (aliases) because InsightFace might request
+        # '448' while get_any_name() returns something else.
+        self._out_map = {}
+        for out in self._compiled.outputs:
+            for name in out.get_names():
+                self._out_map[name] = out
 
     # ------------------------------------------------------------------
     # onnxruntime-compatible API

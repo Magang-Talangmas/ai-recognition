@@ -14,10 +14,11 @@ from attendance_cv.config import FaceConfig
 @dataclass(slots=True)
 class FaceResult:
     bbox: np.ndarray
-    embedding: np.ndarray
+    embedding: np.ndarray | None
     quality_ok: bool
     blur_score: float
     detection_score: float
+    _insight_face: object = None  # Holds the insightface Face object for later recognition
 
 
 class FaceEngine:
@@ -62,44 +63,68 @@ class FaceEngine:
             )
 
 
-    def detect(self, frame: np.ndarray) -> list[FaceResult]:
+    def detect_only(self, frame: np.ndarray) -> list[FaceResult]:
+        """Runs ONLY the extremely fast SCRFD detection."""
         output: list[FaceResult] = []
-
-        for face in self.app.get(frame):
-            bbox = np.asarray(face.bbox, dtype=np.float32)
+        bboxes, kpss = self.app.det_model.detect(frame, max_num=0, metric='default')
+        if bboxes.shape[0] == 0:
+            return output
+            
+        from insightface.app.common import Face
+        for i in range(bboxes.shape[0]):
+            bbox = bboxes[i, 0:4]
+            det_score = bboxes[i, 4]
+            kps = kpss[i] if kpss is not None else None
+            face = Face(bbox=bbox, kps=kps, det_score=det_score)
+            
             x1, y1, x2, y2 = bbox.astype(int)
-
             crop = frame[
                 max(0, y1):max(0, y2),
                 max(0, x1):max(0, x2),
             ]
-
             blur = self._blur_score(crop)
             width = max(0, x2 - x1)
             height = max(0, y2 - y1)
-
+            
             quality_ok = (
                 width >= self.config.min_face_size
                 and height >= self.config.min_face_size
                 and blur >= self.config.blur_threshold
             )
-
-            embedding = np.asarray(
-                face.normed_embedding,
-                dtype=np.float32,
-            )
-
+            
             output.append(
                 FaceResult(
                     bbox=bbox,
-                    embedding=embedding,
+                    embedding=None,
                     quality_ok=quality_ok,
                     blur_score=blur,
-                    detection_score=float(face.det_score),
+                    detection_score=float(det_score),
+                    _insight_face=face,
                 )
             )
-
         return output
+
+    def recognize_only(self, frame: np.ndarray, faces: list[FaceResult]) -> None:
+        """Runs the heavy ArcFace recognition on previously detected faces. Updates the FaceResult in-place."""
+        for res in faces:
+            if not res.quality_ok or res._insight_face is None:
+                continue
+            
+            for taskname, model in self.app.models.items():
+                if taskname == 'detection':
+                    continue
+                model.get(frame, res._insight_face)
+                
+            res.embedding = np.asarray(
+                res._insight_face.normed_embedding,
+                dtype=np.float32,
+            )
+
+    def detect(self, frame: np.ndarray) -> list[FaceResult]:
+        """Legacy synchronous method that runs both detection and recognition."""
+        faces = self.detect_only(frame)
+        self.recognize_only(frame, faces)
+        return faces
 
     def build_template(
         self,
