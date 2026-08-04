@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import cv2 as cv
 import numpy as np
 
+from attendance_cv.api_dispatcher import BackendDispatcher
 from attendance_cv.config import load_config
 from attendance_cv.database import AttendanceDB
 from attendance_cv.face_engine import FaceEngine
@@ -162,6 +163,12 @@ class AsyncInferenceWorker:
             config.attendance.event_database,
             config.attendance.duplicate_cooldown_seconds,
         )
+        self.backend_dispatcher = BackendDispatcher(
+            api_url=config.backend.api_url,
+            api_key=config.backend.api_key,
+            enabled=config.backend.enabled,
+            timeout=config.backend.timeout,
+        )
 
         self.track_votes = defaultdict(
             lambda: deque(maxlen=config.face.vote_window)
@@ -245,45 +252,29 @@ class AsyncInferenceWorker:
                         score,
                     )
 
-                self.last_seen[track_id] = time.monotonic()
-
-                # Event Crossing Detection using Face Center
-                current_side = 1 if fcy >= line_y else -1
-                previous_side = self.previous_sides.get(track_id)
-
-                if previous_side is not None:
-                    direction = crossing_direction(
-                        previous_side,
-                        current_side,
-                        self.config.attendance.inside_is_below_line,
+                    # Opsi B: Langsung memicu CHECK-IN saat wajah dikenali stabil
+                    event_id = self.database.create_pending_event(
+                        camera_id=self.config.camera.camera_id,
+                        track_id=track_id,
+                        employee_id=employee_id,
+                        direction="ENTER",
+                        event_type="CHECK_IN",
+                        similarity=score,
                     )
 
-                    if direction:
-                        identity = self.confirmed_identities.get(track_id)
-                        if identity:
-                            emp_id, emp_score = identity
-                            event_type = (
-                                "CHECK_IN"
-                                if direction == "ENTER"
-                                else "EXIT_SELECTION"
-                            )
+                    if event_id is not None:
+                        print(
+                            f"\n>>> [CHECK-IN TRIGGERED] Event #{event_id}: {employee_id} "
+                            f"(score={score:.3f}) | Status: PENDING_CONFIRMATION"
+                        )
+                        # Asynchronous dispatch ke Backend API
+                        self.backend_dispatcher.dispatch_checkin(
+                            employee_id=employee_id,
+                            similarity=score,
+                            camera_id=self.config.camera.camera_id,
+                        )
 
-                            event_id = self.database.create_pending_event(
-                                camera_id=self.config.camera.camera_id,
-                                track_id=track_id,
-                                employee_id=emp_id,
-                                direction=direction,
-                                event_type=event_type,
-                                similarity=emp_score,
-                            )
-
-                            if event_id is not None:
-                                print(
-                                    f"EVENT {event_id}: {emp_id} {event_type} "
-                                    f"score={emp_score:.3f} | Status: PENDING_CONFIRMATION"
-                                )
-
-                self.previous_sides[track_id] = current_side
+                self.last_seen[track_id] = time.monotonic()
 
                 display_name, display_score = self.confirmed_identities.get(
                     track_id, (match.employee_id, match.score)
@@ -334,6 +325,7 @@ class AsyncInferenceWorker:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self.backend_dispatcher.stop()
         self._thread.join(timeout=5)
 
 
@@ -424,13 +416,17 @@ def main() -> None:
                     label = face_info.employee_id or "UNKNOWN"
                     score = face_info.score
 
-                    box_color = (0, 255, 0) if label != "UNKNOWN" else (0, 215, 255)
+                    if label != "UNKNOWN":
+                        text = f"[CHECK-IN] {label} ({score:.2f})"
+                        box_color = (0, 255, 0)
+                    else:
+                        text = f"UNKNOWN ({score:.2f})"
+                        box_color = (0, 215, 255)
 
                     # Thin bounding box (thickness 1 for crisp look on Substream)
                     cv.rectangle(frame, (fx1, fy1), (fx2, fy2), box_color, 1)
 
                     # Compact text badge with dark background
-                    text = f"{label} ({score:.2f})"
                     font_scale = 0.38
                     (tw, th), _ = cv.getTextSize(
                         text, cv.FONT_HERSHEY_SIMPLEX, font_scale, 1

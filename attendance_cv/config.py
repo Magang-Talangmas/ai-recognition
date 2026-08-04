@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import os
@@ -88,11 +88,20 @@ class AttendanceConfig:
 
 
 @dataclass(slots=True)
+class BackendConfig:
+    api_url: str = "http://localhost:3000/api/v1/attendance"
+    api_key: str = "your-ml-api-key-change-in-production"
+    enabled: bool = True
+    timeout: float = 4.0
+
+
+@dataclass(slots=True)
 class AppConfig:
     camera: CameraConfig
     person: PersonConfig
     face: FaceConfig
     attendance: AttendanceConfig
+    backend: BackendConfig = field(default_factory=BackendConfig)
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
@@ -103,9 +112,12 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
 
     data = _expand_env(data)
 
+    backend_data = data.get("backend", {})
+
     return AppConfig(
         camera=CameraConfig(**data["camera"]),
         person=PersonConfig(**data["person_detection"]),
         face=FaceConfig(**data["face"]),
         attendance=AttendanceConfig(**data["attendance"]),
+        backend=BackendConfig(**backend_data),
     )
