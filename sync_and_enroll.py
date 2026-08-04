@@ -88,6 +88,9 @@ def fetch_cloudinary_resources(creds: dict[str, str]) -> list[dict[str, Any]]:
     else:
         print(f"📡 Menghubungi Cloudinary ({cloud_name}) pada root storage...")
 
+    all_resources: list[dict[str, Any]] = []
+    next_cursor = None
+
     while True:
         if next_cursor:
             params["next_cursor"] = next_cursor
