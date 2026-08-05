@@ -3,14 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <unistd.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #endif
 
 #define MAGIC_PACKET 0x53414D54 /* 'TMAS' */
@@ -27,7 +24,6 @@ struct VideoCapture {
     HANDLE h_process;
 #else
     FILE *pipe_fp;
-    pid_t pid;
 #endif
     bool is_live;
 };
@@ -99,7 +95,7 @@ VideoCapture *video_capture_open(const char *source, int target_width, int targe
     HANDLE h_read = NULL;
     HANDLE h_write = NULL;
 
-    if (CreatePipe(&h_read, &h_write, &sa, 4 * 1024 * 1024)) {
+    if (CreatePipe(&h_read, &h_write, &sa, 8 * 1024 * 1024)) {
         SetHandleInformation(h_read, HANDLE_FLAG_INHERIT, 0);
 
         STARTUPINFOA si;
@@ -125,7 +121,7 @@ VideoCapture *video_capture_open(const char *source, int target_width, int targe
             &pi
         );
 
-        CloseHandle(h_write); /* Close write end in parent */
+        CloseHandle(h_write);
 
         if (success) {
             cap->h_read_pipe = h_read;
@@ -182,6 +178,7 @@ bool video_capture_read_frame(
     int *num_faces_out,
     double now_time
 ) {
+    (void)now_time;
     if (!cap || !cap->frame_buffer || !out_frame) return false;
 
     cap->frame_count++;
@@ -241,39 +238,8 @@ bool video_capture_read_frame(
     }
 
     if (!got_live_frame) {
-        /* Fallback synthetic pattern when stream is connecting/reconnecting */
-        for (int y = 0; y < h; y++) {
-            uint8_t bg_val = (uint8_t)(25 + (y * 20 / h));
-            for (int x = 0; x < w; x++) {
-                int idx = (y * w + x) * 3;
-                buf[idx + 0] = bg_val;
-                buf[idx + 1] = bg_val + 5;
-                buf[idx + 2] = bg_val + 10;
-            }
-        }
-
-        double t = now_time * 0.8;
-        float person_y = (float)(h * 0.30 + (sin(t) * 0.5 + 0.5) * (h * 0.45));
-        float person_x = (float)(w * 0.50 + cos(t * 0.7) * 60.0);
-
-        int face_r = 35;
-        int fcx = (int)person_x;
-        int fcy = (int)person_y;
-
-        for (int dy = -face_r; dy <= face_r; dy++) {
-            for (int dx = -face_r; dx <= face_r; dx++) {
-                if (dx * dx + dy * dy <= face_r * face_r) {
-                    int px = fcx + dx;
-                    int py = fcy + dy;
-                    if (px >= 0 && px < w && py >= 0 && py < h) {
-                        int idx = (py * w + px) * 3;
-                        buf[idx + 0] = 195;
-                        buf[idx + 1] = 160;
-                        buf[idx + 2] = 140;
-                    }
-                }
-            }
-        }
+        /* When connecting or between frames, keep clean neutral CCTV background */
+        memset(buf, 20, img_bytes);
     }
 
     out_frame->data = buf;
