@@ -150,16 +150,20 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        /* Grab Video Frame */
+        /* Grab Video Frame and Real Face Detections */
         ImageBuffer frame = {0};
+        FaceResult faces[MAX_DETECTED_FACES];
+        int num_faces = 0;
+        double t_infer_start = get_monotonic_time_seconds();
+
         if (cap) {
-            video_capture_read_frame(cap, &frame, now);
+            video_capture_read_frame(cap, &frame, faces, MAX_DETECTED_FACES, &num_faces, now);
         }
 
-        /* Pipeline step 2: Run Face Detection (SCRFD) */
-        double t_infer_start = get_monotonic_time_seconds();
-        FaceResult faces[MAX_DETECTED_FACES];
-        int num_faces = face_engine_detect(face_engine, &frame, faces, MAX_DETECTED_FACES);
+        /* Fallback face engine detection if needed */
+        if (num_faces == 0 && face_engine) {
+            num_faces = face_engine_detect(face_engine, &frame, faces, MAX_DETECTED_FACES);
+        }
         double inference_ms = (get_monotonic_time_seconds() - t_infer_start) * 1000.0;
 
         for (int i = 0; i < num_faces; i++) {

@@ -11,13 +11,28 @@ extern "C" {
 
 typedef struct VideoCapture VideoCapture;
 
-/* Initialize camera or RTSP stream video capture */
+/*
+ * Open video capture stream (RTSP URL, webcam index, or video file)
+ */
 VideoCapture *video_capture_open(const char *source, int target_width, int target_height);
 
-/* Read latest frame. Returns true if frame was read successfully */
-bool video_capture_read_frame(VideoCapture *cap, ImageBuffer *out_frame, double now_time);
+/*
+ * Read next frame and any detected faces from stream.
+ * Populates out_frame (BGR24 buffer) and out_faces (detected face structures & embeddings).
+ * Returns true on success.
+ */
+bool video_capture_read_frame(
+    VideoCapture *cap,
+    ImageBuffer *out_frame,
+    FaceResult *out_faces,
+    int max_faces,
+    int *num_faces_out,
+    double now_time
+);
 
-/* Release video capture resources */
+/*
+ * Close video capture stream and free resources.
+ */
 void video_capture_close(VideoCapture *cap);
 
 #ifdef __cplusplus
