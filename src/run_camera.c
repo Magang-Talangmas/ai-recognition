@@ -236,6 +236,27 @@ int main(int argc, char **argv) {
             }
         }
 
+        /* Frame-level identity de-duplication:
+           Ensure that no identity/person is displayed double in the same frame.
+           If multiple detected faces claim the same name, ONLY the face with the highest percentage/score wins!
+           The lower-scoring face(s) become Unknown. */
+        for (int i = 0; i < num_faces; i++) {
+            if (!faces[i].is_recognized || faces[i].matched_name[0] == '\0') continue;
+            for (int j = i + 1; j < num_faces; j++) {
+                if (!faces[j].is_recognized || faces[j].matched_name[0] == '\0') continue;
+                if (strcmp(faces[i].matched_name, faces[j].matched_name) == 0) {
+                    if (faces[i].match_score >= faces[j].match_score) {
+                        faces[j].is_recognized = false;
+                        faces[j].matched_name[0] = '\0';
+                    } else {
+                        faces[i].is_recognized = false;
+                        faces[i].matched_name[0] = '\0';
+                        break;
+                    }
+                }
+            }
+        }
+
         /* Render to native Windows GUI Window */
         if (win) {
             gui_window_render(
