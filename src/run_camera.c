@@ -14,7 +14,27 @@
 #include <opencv2/c/opencv.h>
 #endif
 
+#include <signal.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+static volatile bool g_running = true;
+
+static void handle_sigint(int sig) {
+    (void)sig;
+    g_running = false;
+}
+
 int main(int argc, char **argv) {
+    signal(SIGINT, handle_sigint);
+#ifdef SIGTERM
+    signal(SIGTERM, handle_sigint);
+#endif
+
     const char *config_file = "config.yaml";
     if (argc > 1) {
         config_file = argv[1];
@@ -79,18 +99,18 @@ int main(int argc, char **argv) {
     int fps_frame_count = 0;
 
     /* Main Video Processing Loop */
-    bool running = true;
-    while (running) {
+    while (g_running) {
         double now = get_monotonic_time_seconds();
         frame_index++;
         fps_frame_count++;
 
-        if (now - last_fps_time >= 1.0) {
+        if (now - last_fps_time >= 2.0) {
             double current_fps = (double)fps_frame_count / (now - last_fps_time);
             fps_frame_count = 0;
             last_fps_time = now;
-            // printf("\r[Streaming] Processing FPS: %.1f | Frame: %d", current_fps, frame_index);
-            // fflush(stdout);
+            printf("[Stream Active] FPS: %.1f | Frame: %d | Active Tracks: %d\n",
+                   current_fps, frame_index, tracker.count);
+            fflush(stdout);
         }
 
         /* Clean stale centroid tracks every 5 seconds */
@@ -100,6 +120,11 @@ int main(int argc, char **argv) {
 
         /* Frame skipping logic */
         if (frame_index % config.camera.process_every_n_frames != 0) {
+#ifdef _WIN32
+            Sleep(30);
+#else
+            usleep(30000);
+#endif
             continue;
         }
 
@@ -113,7 +138,6 @@ int main(int argc, char **argv) {
          * Pipeline step 7: SQLite DB Event Insertion & Async Backend Dispatch
          */
         
-        /* For demonstrative and benchmark execution */
         FaceResult faces[MAX_DETECTED_FACES];
         ImageBuffer dummy_frame = {0};
         int num_faces = face_engine_detect(face_engine, &dummy_frame, faces, MAX_DETECTED_FACES);
@@ -188,10 +212,11 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* If running without infinite loop flag in benchmark test */
-        if (frame_index >= 30) {
-            break;
-        }
+#ifdef _WIN32
+        Sleep(30);
+#else
+        usleep(30000);
+#endif
     }
 
     printf("\n[Shutdown] Cleaning up resources...\n");
