@@ -98,7 +98,7 @@ int main(int argc, char **argv) {
     /* Initialize Native Windows GUI Preview Window */
     GuiWindow *win = NULL;
     if (config.camera.show_preview) {
-        win = gui_window_create("Talangmas AI Recognition - Camera Stream (C Edition)", 640, 480);
+        win = gui_window_create("Talangmas AI Recognition - Camera Stream (C Edition)", 980, 480);
         if (win) {
             printf("[GUI] Native Camera Stream Preview Window opened.\n");
         }

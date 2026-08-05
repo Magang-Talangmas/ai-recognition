@@ -144,6 +144,8 @@ struct GuiWindow {
     HDC hdc_mem;
     HBITMAP hbm_mem;
     HBITMAP hbm_old;
+    HANDLE h_shm_map;
+    uint8_t *shm_ptr;
     HFONT font_regular;
     HFONT font_bold;
     HFONT font_title;
@@ -261,6 +263,25 @@ GuiWindow *gui_window_create(const char *title, int width, int height) {
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI"
     );
 
+    /* Setup Shared Memory for zero-latency Web/Mobile Live Streaming */
+    win->h_shm_map = CreateFileMappingA(
+        INVALID_HANDLE_VALUE,
+        NULL,
+        PAGE_READWRITE,
+        0,
+        16 * 1024 * 1024,
+        "Local\\TMAS_PREVIEW_SHM"
+    );
+    if (win->h_shm_map) {
+        win->shm_ptr = (uint8_t *)MapViewOfFile(
+            win->h_shm_map,
+            FILE_MAP_ALL_ACCESS,
+            0,
+            0,
+            16 * 1024 * 1024
+        );
+    }
+
     win->is_open = true;
 #endif
 
@@ -270,6 +291,15 @@ GuiWindow *gui_window_create(const char *title, int width, int height) {
 void gui_window_destroy(GuiWindow *win) {
     if (!win) return;
 #ifdef _WIN32
+    if (win->shm_ptr) {
+        UnmapViewOfFile(win->shm_ptr);
+        win->shm_ptr = NULL;
+    }
+    if (win->h_shm_map) {
+        CloseHandle(win->h_shm_map);
+        win->h_shm_map = NULL;
+    }
+
     if (win->hdc_mem) {
         SelectObject(win->hdc_mem, win->hbm_old);
         DeleteDC(win->hdc_mem);
@@ -591,6 +621,30 @@ void gui_window_render(
     HDC hdc_screen = GetDC(win->hwnd);
     BitBlt(hdc_screen, 0, 0, w, h, win->hdc_mem, 0, 0, SRCCOPY);
     ReleaseDC(win->hwnd, hdc_screen);
+
+    /* Export rendered offscreen buffer to Shared Memory for Web/Mobile Live Stream */
+    if (win->shm_ptr && w > 0 && h > 0) {
+        BITMAPINFO shm_bmi;
+        memset(&shm_bmi, 0, sizeof(shm_bmi));
+        shm_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        shm_bmi.bmiHeader.biWidth = w;
+        shm_bmi.bmiHeader.biHeight = -h; /* Top-down BGR */
+        shm_bmi.bmiHeader.biPlanes = 1;
+        shm_bmi.bmiHeader.biBitCount = 24;
+        shm_bmi.bmiHeader.biCompression = BI_RGB;
+
+        uint8_t *pixels = win->shm_ptr + 24; /* 24 bytes header offset */
+        GetDIBits(win->hdc_mem, win->hbm_mem, 0, h, pixels, &shm_bmi, DIB_RGB_COLORS);
+
+        /* Write 24-byte header: uint32 magic (TMAS), uint32 width, uint32 height, uint32 channels, uint64 seq */
+        uint32_t *hdr32 = (uint32_t *)win->shm_ptr;
+        uint64_t *hdr64 = (uint64_t *)(win->shm_ptr + 16);
+        hdr32[1] = (uint32_t)w;
+        hdr32[2] = (uint32_t)h;
+        hdr32[3] = 3;
+        (*hdr64)++;
+        hdr32[0] = 0x53414D54; /* 'TMAS' magic */
+    }
 
 #endif
 }
