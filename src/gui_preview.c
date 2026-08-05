@@ -435,41 +435,13 @@ void gui_window_render(
             SelectObject(hdc, old_pen);
             DeleteObject(lm_pen);
 
-            /* 2c. Clean Person Name Label Badge */
+            /* 2c. Determine Display Name */
             char disp_name[128];
             if (is_match) {
                 format_person_name(face->matched_name, disp_name, sizeof(disp_name));
             } else {
                 strncpy(disp_name, "Unknown", sizeof(disp_name) - 1);
             }
-
-            /* Calculate text dimensions */
-            SelectObject(hdc, win->font_bold);
-            SIZE text_size;
-            GetTextExtentPoint32A(hdc, disp_name, (int)strlen(disp_name), &text_size);
-
-            int badge_w = text_size.cx + 20;
-            if (badge_w < (bx2 - bx1)) badge_w = (bx2 - bx1);
-            int badge_h = 26;
-            int badge_y = by1 - badge_h - 4;
-            if (badge_y < 4) badge_y = 4;
-
-            RECT badge_rect = {bx1, badge_y, bx1 + badge_w, badge_y + badge_h};
-            HBRUSH badge_b = CreateSolidBrush(badge_bg);
-            FillRect(hdc, &badge_rect, badge_b);
-            DeleteObject(badge_b);
-
-            HPEN badge_border = CreatePen(PS_SOLID, 1, box_color);
-            old_pen = (HPEN)SelectObject(hdc, badge_border);
-            old_brush = (HBRUSH)SelectObject(hdc, null_brush);
-            Rectangle(hdc, badge_rect.left, badge_rect.top, badge_rect.right, badge_rect.bottom);
-            SelectObject(hdc, old_brush);
-            SelectObject(hdc, old_pen);
-            DeleteObject(badge_border);
-
-            /* Render Name Text */
-            SetTextColor(hdc, is_match ? RGB(0, 255, 128) : RGB(0, 215, 255));
-            TextOutA(hdc, bx1 + 10, badge_y + 4, disp_name, (int)strlen(disp_name));
 
             /* 2d. Draw on Side Panel (Only if panel exists and there is space) */
             if (has_panel && panel_cursor_y + 100 < h && is_match) {
