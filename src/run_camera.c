@@ -271,9 +271,9 @@ int main(int argc, char **argv) {
         }
 
 #ifdef _WIN32
-        Sleep(2);
+        Sleep(1);
 #else
-        usleep(2000);
+        usleep(1000);
 #endif
     }
 

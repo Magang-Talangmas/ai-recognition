@@ -94,8 +94,9 @@ static int winhttp_send_request(
         return -1;
     }
 
-    WCHAR headers[512];
-    swprintf(headers, 512, L"Content-Type: application/json\r\nx-api-key: %hs\r\n", api_key ? api_key : "");
+    WCHAR headers[1024];
+    swprintf(headers, 1024, L"Content-Type: application/json\r\napikey: %hs\r\nAuthorization: Bearer %hs\r\nPrefer: return=minimal\r\nx-api-key: %hs\r\n",
+             api_key ? api_key : "", api_key ? api_key : "", api_key ? api_key : "");
 
     DWORD body_len = (DWORD)strlen(json_body);
     BOOL b_results = WinHttpSendRequest(h_request, headers, (DWORD)-1, (LPVOID)json_body, body_len, body_len, 0);
@@ -145,26 +146,34 @@ static void send_task_payload(const BackendConfig *config, const DispatchTask *t
     cJSON_AddStringToObject(root, "detected_at", task->detected_at);
     cJSON_AddStringToObject(root, "camera_id", task->camera_id);
 
-    char *json_str = cJSON_PrintUnformatted(root);
-    if (json_str) {
+    char *json_str = cJSON_Print(root); // Formatted JSON string for terminal
+    char *raw_json = cJSON_PrintUnformatted(root);
+    if (json_str && raw_json) {
+        printf("\n=================================================================\n");
+        printf("[PAYLOAD DISPATCH] Sending event data to backend...\n");
+        printf("URL: %s\n", config->api_url);
+        printf("Payload JSON:\n%s\n", json_str);
+        printf("=================================================================\n");
+        fflush(stdout);
+
         int status = http_client_post_json(
             config->api_url,
             config->api_key,
-            json_str,
+            raw_json,
             config->timeout,
             NULL,
             0
         );
 
         if (status >= 200 && status < 300) {
-            printf("[BE DISPATCH SUCCESS] %s | CHECK_IN | HTTP %d | event_id=%s\n",
-                   task->employee_id, status, task->event_id);
+            printf("[BE DISPATCH SUCCESS] %s | CHECK_IN | HTTP %d\n\n", task->employee_id, status);
         } else {
-            printf("[BE DISPATCH WARNING] %s | CHECK_IN | HTTP %d (URL: %s)\n",
-                   task->employee_id, status, config->api_url);
+            printf("[BE DISPATCH STATUS] %s | CHECK_IN | HTTP %d\n\n", task->employee_id, status);
         }
-        free(json_str);
+        fflush(stdout);
     }
+    if (json_str) free(json_str);
+    if (raw_json) free(raw_json);
     cJSON_Delete(root);
 }
 

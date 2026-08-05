@@ -31,12 +31,12 @@ static FaceImageCache* get_enrolled_face(const char *name) {
     if (num_face_cache >= MAX_FACE_CACHE) return NULL;
     
     char search_path[512];
-    snprintf(search_path, sizeof(search_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\*.jpg", name);
+    snprintf(search_path, sizeof(search_path), "data\\enroll\\%s\\*.jpg", name);
     
     WIN32_FIND_DATAA find_data;
     HANDLE hFind = FindFirstFileA(search_path, &find_data);
     if (hFind == INVALID_HANDLE_VALUE) {
-        snprintf(search_path, sizeof(search_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\*.png", name);
+        snprintf(search_path, sizeof(search_path), "data\\enroll\\%s\\*.png", name);
         hFind = FindFirstFileA(search_path, &find_data);
         if (hFind == INVALID_HANDLE_VALUE) {
             strcpy(face_cache[num_face_cache].name, name);
@@ -47,7 +47,7 @@ static FaceImageCache* get_enrolled_face(const char *name) {
     }
     
     char img_path[512];
-    snprintf(img_path, sizeof(img_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\%s", name, find_data.cFileName);
+    snprintf(img_path, sizeof(img_path), "data\\enroll\\%s\\%s", name, find_data.cFileName);
     FindClose(hFind);
     
     int w, h, c;
@@ -62,9 +62,9 @@ static FaceImageCache* get_enrolled_face(const char *name) {
             data[i + 2] = temp;
         }
 
-        /* Pre-scale to 80x80 using GDI and store as HBITMAP */
+        /* Pre-scale to 52x52 using GDI and store as HBITMAP */
         HDC hdc_screen = GetDC(NULL);
-        hbm = CreateCompatibleBitmap(hdc_screen, 80, 80);
+        hbm = CreateCompatibleBitmap(hdc_screen, 52, 52);
         HDC hdc_temp = CreateCompatibleDC(hdc_screen);
         HBITMAP old_bm = (HBITMAP)SelectObject(hdc_temp, hbm);
 
@@ -81,7 +81,7 @@ static FaceImageCache* get_enrolled_face(const char *name) {
         SetBrushOrgEx(hdc_temp, 0, 0, NULL);
         StretchDIBits(
             hdc_temp,
-            0, 0, 80, 80,
+            0, 0, 52, 52,
             0, 0, w, h,
             data,
             &cbmi,
@@ -102,12 +102,94 @@ static FaceImageCache* get_enrolled_face(const char *name) {
     
     return cache->hbm_crop ? cache : NULL;
 }
+
+static HBITMAP create_snapshot_hbitmap(const ImageBuffer *frame, const FaceBBox *bbox, int target_w, int target_h) {
+    if (!frame || !frame->data || frame->width <= 0 || frame->height <= 0 || !bbox) return NULL;
+
+    float bw = bbox->x2 - bbox->x1;
+    float bh = bbox->y2 - bbox->y1;
+    if (bw <= 4.0f || bh <= 4.0f) return NULL;
+
+    /* Add 15% padding around face for clean head crop */
+    float pad_x = bw * 0.15f;
+    float pad_y = bh * 0.15f;
+
+    int fx1 = (int)fmaxf(0.0f, bbox->x1 - pad_x);
+    int fy1 = (int)fmaxf(0.0f, bbox->y1 - pad_y);
+    int fx2 = (int)fminf((float)frame->width, bbox->x2 + pad_x);
+    int fy2 = (int)fminf((float)frame->height, bbox->y2 + pad_y);
+
+    int crop_w = fx2 - fx1;
+    int crop_h = fy2 - fy1;
+    if (crop_w <= 4 || crop_h <= 4) return NULL;
+
+    /* Manually crop & resample BGR pixels directly from top-down frame buffer */
+    uint8_t *crop_bgra = (uint8_t *)calloc(1, target_w * target_h * 4);
+    if (!crop_bgra) return NULL;
+
+    int src_stride = frame->stride;
+    int ch = frame->channels;
+
+    for (int dy = 0; dy < target_h; dy++) {
+        int sy = fy1 + (dy * crop_h) / target_h;
+        if (sy >= frame->height) sy = frame->height - 1;
+        const uint8_t *src_row = frame->data + sy * src_stride;
+
+        for (int dx = 0; dx < target_w; dx++) {
+            int sx = fx1 + (dx * crop_w) / target_w;
+            if (sx >= frame->width) sx = frame->width - 1;
+
+            const uint8_t *pixel = src_row + sx * ch;
+            int dst_idx = (dy * target_w + dx) * 4;
+
+            /* BGR to BGRA for GDI */
+            crop_bgra[dst_idx + 0] = pixel[0]; // B
+            crop_bgra[dst_idx + 1] = pixel[1]; // G
+            crop_bgra[dst_idx + 2] = pixel[2]; // R
+            crop_bgra[dst_idx + 3] = 255;      // A
+        }
+    }
+
+    BITMAPINFO cbmi;
+    memset(&cbmi, 0, sizeof(cbmi));
+    cbmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    cbmi.bmiHeader.biWidth = target_w;
+    cbmi.bmiHeader.biHeight = -target_h; /* Top-down BGRA */
+    cbmi.bmiHeader.biPlanes = 1;
+    cbmi.bmiHeader.biBitCount = 32;
+    cbmi.bmiHeader.biCompression = BI_RGB;
+
+    HDC hdc_screen = GetDC(NULL);
+    HBITMAP hbm = CreateCompatibleBitmap(hdc_screen, target_w, target_h);
+    HDC hdc_temp = CreateCompatibleDC(hdc_screen);
+    HBITMAP old_bm = (HBITMAP)SelectObject(hdc_temp, hbm);
+
+    SetStretchBltMode(hdc_temp, HALFTONE);
+    SetBrushOrgEx(hdc_temp, 0, 0, NULL);
+    StretchDIBits(
+        hdc_temp,
+        0, 0, target_w, target_h,
+        0, 0, target_w, target_h,
+        crop_bgra,
+        &cbmi,
+        DIB_RGB_COLORS,
+        SRCCOPY
+    );
+
+    SelectObject(hdc_temp, old_bm);
+    DeleteDC(hdc_temp);
+    ReleaseDC(NULL, hdc_screen);
+    free(crop_bgra);
+
+    return hbm;
+}
 #endif
 
 typedef struct {
     char matched_name[128];
     float max_score;
     ULONGLONG last_seen_tick;
+    HBITMAP hbm_snapshot;
 } PanelPerson;
 
 #define MAX_PANEL_PERSONS 32
@@ -327,7 +409,8 @@ void gui_window_render(
     HDC hdc = win->hdc_mem;
 
     /* Define Side Panel Width */
-    int panel_w = 260;
+    /* Define Side Panel Width */
+    int panel_w = 340;
     int cam_w = (w > panel_w + 320) ? (w - panel_w) : w;
     bool has_panel = (cam_w != w);
 
@@ -399,28 +482,52 @@ void gui_window_render(
 
             if (bx2 <= bx1 || by2 <= by1) continue;
 
-            bool is_match = face->is_recognized && (face->matched_name[0] != '\0');
+            bool is_match = face->is_recognized && (face->matched_name[0] != '\0') && (face->match_score >= 0.45f);
             COLORREF box_color = is_match ? RGB(0, 255, 128) : RGB(0, 215, 255);
-            COLORREF badge_bg = is_match ? RGB(10, 30, 20) : RGB(15, 22, 32);
 
             if (is_match) {
                 ULONGLONG current_tick = GetTickCount64();
-                bool found = false;
+                int found_idx = -1;
                 for (int p = 0; p < num_panel_persons; p++) {
                     if (strcmp(panel_persons[p].matched_name, face->matched_name) == 0) {
                         panel_persons[p].last_seen_tick = current_tick;
                         if (face->match_score > panel_persons[p].max_score) {
                             panel_persons[p].max_score = face->match_score;
                         }
-                        found = true;
+                        found_idx = p;
                         break;
                     }
                 }
-                if (!found && num_panel_persons < MAX_PANEL_PERSONS) {
-                    strcpy(panel_persons[num_panel_persons].matched_name, face->matched_name);
-                    panel_persons[num_panel_persons].max_score = face->match_score;
-                    panel_persons[num_panel_persons].last_seen_tick = current_tick;
-                    num_panel_persons++;
+
+                if (found_idx >= 0) {
+                    /* Move recently recognized person to top (index 0) */
+                    if (found_idx > 0) {
+                        PanelPerson temp = panel_persons[found_idx];
+                        for (int k = found_idx; k > 0; k--) {
+                            panel_persons[k] = panel_persons[k - 1];
+                        }
+                        panel_persons[0] = temp;
+                    }
+                    /* Ensure still snapshot photo exists (captured once) */
+                    if (!panel_persons[0].hbm_snapshot) {
+                        panel_persons[0].hbm_snapshot = create_snapshot_hbitmap(frame, &face->bbox, 52, 52);
+                    }
+                } else {
+                    /* Insert new person at index 0 (top of list) and capture STILL snapshot ONCE */
+                    int limit = (num_panel_persons < MAX_PANEL_PERSONS) ? num_panel_persons : (MAX_PANEL_PERSONS - 1);
+                    if (num_panel_persons == MAX_PANEL_PERSONS && panel_persons[limit].hbm_snapshot) {
+                        DeleteObject(panel_persons[limit].hbm_snapshot);
+                    }
+                    for (int k = limit; k > 0; k--) {
+                        panel_persons[k] = panel_persons[k - 1];
+                    }
+                    strcpy(panel_persons[0].matched_name, face->matched_name);
+                    panel_persons[0].max_score = face->match_score;
+                    panel_persons[0].last_seen_tick = current_tick;
+                    panel_persons[0].hbm_snapshot = create_snapshot_hbitmap(frame, &face->bbox, 52, 52);
+                    if (num_panel_persons < MAX_PANEL_PERSONS) {
+                        num_panel_persons++;
+                    }
                 }
             }
 
@@ -474,6 +581,10 @@ void gui_window_render(
         ULONGLONG current_tick = GetTickCount64();
         for (int p = 0; p < num_panel_persons; p++) {
             if (current_tick - panel_persons[p].last_seen_tick > 10000) {
+                if (panel_persons[p].hbm_snapshot) {
+                    DeleteObject(panel_persons[p].hbm_snapshot);
+                    panel_persons[p].hbm_snapshot = NULL;
+                }
                 // Remove expired person by shifting array left
                 for (int j = p; j < num_panel_persons - 1; j++) {
                     panel_persons[j] = panel_persons[j+1];
@@ -483,60 +594,89 @@ void gui_window_render(
                 continue;
             }
 
-            if (panel_cursor_y + 100 >= h) break; // Out of space
+            if (panel_cursor_y + 65 >= h) break; // Out of space
 
-            int px = cam_w + 16;
+            int px1 = cam_w + 14;
+            int px2 = cam_w + 72;
+            int tx = cam_w + 132;
             int py = panel_cursor_y;
-            int pw = 80;
-            int ph = 80;
+            int pw = 52;
+            int ph = 52;
             COLORREF badge_bg = RGB(10, 30, 20);
             COLORREF box_color = RGB(0, 255, 128);
+            COLORREF snap_border = RGB(0, 215, 255);
 
             char disp_name[128];
             format_person_name(panel_persons[p].matched_name, disp_name, sizeof(disp_name));
 
             FaceImageCache *cache = get_enrolled_face(panel_persons[p].matched_name);
 
-            /* Draw background for crop */
-            RECT crop_bg_r = {px - 2, py - 2, px + pw + 2, py + ph + 2};
-            HBRUSH crop_b = CreateSolidBrush(badge_bg);
-            FillRect(hdc, &crop_bg_r, crop_b);
-            DeleteObject(crop_b);
+            /* 1. Enrolled Profile Photo (Green Border) */
+            RECT crop1_bg = {px1 - 1, py - 1, px1 + pw + 1, py + ph + 1};
+            HBRUSH b1 = CreateSolidBrush(badge_bg);
+            FillRect(hdc, &crop1_bg, b1);
+            DeleteObject(b1);
 
             if (cache && cache->hbm_crop) {
                 HDC hdc_face = CreateCompatibleDC(hdc);
                 HBITMAP old_bm = (HBITMAP)SelectObject(hdc_face, cache->hbm_crop);
-                BitBlt(hdc, px, py, pw, ph, hdc_face, 0, 0, SRCCOPY);
+                BitBlt(hdc, px1, py, pw, ph, hdc_face, 0, 0, SRCCOPY);
                 SelectObject(hdc_face, old_bm);
                 DeleteDC(hdc_face);
             } else {
-                SelectObject(hdc, win->font_regular);
+                SelectObject(hdc, win->font_small);
                 SetTextColor(hdc, RGB(100, 100, 100));
-                TextOutA(hdc, px + 20, py + 30, "No Pic", 6);
+                TextOutA(hdc, px1 + 6, py + 18, "No Pic", 6);
             }
 
-            /* Draw border for crop */
-            HPEN crop_pen = CreatePen(PS_SOLID, 1, box_color);
-            HPEN old_pen = (HPEN)SelectObject(hdc, crop_pen);
-            HBRUSH null_brush = (HBRUSH)GetStockObject(NULL_BRUSH);
-            HBRUSH old_brush = (HBRUSH)SelectObject(hdc, null_brush);
-            Rectangle(hdc, px, py, px + pw, py + ph);
-            SelectObject(hdc, old_brush);
-            SelectObject(hdc, old_pen);
-            DeleteObject(crop_pen);
+            HPEN pen1 = CreatePen(PS_SOLID, 1, box_color);
+            HPEN old_pen1 = (HPEN)SelectObject(hdc, pen1);
+            HBRUSH null_b1 = (HBRUSH)GetStockObject(NULL_BRUSH);
+            HBRUSH old_br1 = (HBRUSH)SelectObject(hdc, null_b1);
+            Rectangle(hdc, px1, py, px1 + pw, py + ph);
+            SelectObject(hdc, old_br1);
+            SelectObject(hdc, old_pen1);
+            DeleteObject(pen1);
 
-            /* Render name next to the crop */
-            SelectObject(hdc, win->font_regular);
+            /* 2. Live Camera Snapshot Photo (Cyan Border) */
+            RECT crop2_bg = {px2 - 1, py - 1, px2 + pw + 1, py + ph + 1};
+            HBRUSH b2 = CreateSolidBrush(RGB(15, 22, 32));
+            FillRect(hdc, &crop2_bg, b2);
+            DeleteObject(b2);
+
+            if (panel_persons[p].hbm_snapshot) {
+                HDC hdc_snap = CreateCompatibleDC(hdc);
+                HBITMAP old_bm = (HBITMAP)SelectObject(hdc_snap, panel_persons[p].hbm_snapshot);
+                BitBlt(hdc, px2, py, pw, ph, hdc_snap, 0, 0, SRCCOPY);
+                SelectObject(hdc_snap, old_bm);
+                DeleteDC(hdc_snap);
+            } else {
+                SelectObject(hdc, win->font_small);
+                SetTextColor(hdc, RGB(100, 100, 100));
+                TextOutA(hdc, px2 + 6, py + 18, "No Snap", 7);
+            }
+
+            HPEN pen2 = CreatePen(PS_SOLID, 1, snap_border);
+            HPEN old_pen2 = (HPEN)SelectObject(hdc, pen2);
+            HBRUSH null_b2 = (HBRUSH)GetStockObject(NULL_BRUSH);
+            HBRUSH old_br2 = (HBRUSH)SelectObject(hdc, null_b2);
+            Rectangle(hdc, px2, py, px2 + pw, py + ph);
+            SelectObject(hdc, old_br2);
+            SelectObject(hdc, old_pen2);
+            DeleteObject(pen2);
+
+            /* 3. Render Name & Score */
+            SelectObject(hdc, win->font_bold);
             SetTextColor(hdc, RGB(0, 255, 128));
-            TextOutA(hdc, px + pw + 10, py + 10, disp_name, (int)strlen(disp_name));
+            TextOutA(hdc, tx, py + 4, disp_name, (int)strlen(disp_name));
             
             SelectObject(hdc, win->font_small);
             SetTextColor(hdc, RGB(150, 150, 150));
             char acc_str[32];
             snprintf(acc_str, sizeof(acc_str), "Score: %.2f", panel_persons[p].max_score);
-            TextOutA(hdc, px + pw + 10, py + 30, acc_str, (int)strlen(acc_str));
+            TextOutA(hdc, tx, py + 26, acc_str, (int)strlen(acc_str));
 
-            panel_cursor_y += ph + 16;
+            panel_cursor_y += ph + 14;
         }
     }
 

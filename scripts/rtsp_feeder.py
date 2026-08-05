@@ -37,13 +37,14 @@ class ZeroLatencyRTSPCapture:
         self.cv2 = cv2
         self.source = int(source) if isinstance(source, str) and source.isdigit() else source
         
-        # Aggressive low-latency flags for FFmpeg RTSP backend
+        # Smooth low-latency flags for FFmpeg RTSP backend
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-            "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32|analyzeduration;0"
+            "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|probesize;32768|analyzeduration;100000"
         )
         
         self.cap = None
         self.latest_frame = None
+        self.frame_id = 0
         self.lock = threading.Lock()
         self.running = True
         self.is_connected = False
@@ -83,14 +84,15 @@ class ZeroLatencyRTSPCapture:
             if ret and frame is not None:
                 with self.lock:
                     self.latest_frame = frame
+                    self.frame_id += 1
             else:
-                time.sleep(0.01)
+                time.sleep(0.005)
 
-    def read_fresh(self):
+    def read_fresh(self, last_id=-1):
         with self.lock:
-            if self.latest_frame is not None:
-                return True, self.latest_frame.copy()
-            return False, None
+            if self.latest_frame is not None and self.frame_id != last_id:
+                return True, self.latest_frame.copy(), self.frame_id
+            return False, None, last_id
 
     def release(self):
         self.running = False
@@ -174,13 +176,15 @@ def main():
     detector = AsyncFaceDetector(face_engine)
 
     frame_counter = 0
+    last_frame_id = -1
 
     while True:
-        ret, frame = capture.read_fresh()
+        ret, frame, frame_id = capture.read_fresh(last_frame_id)
         if not ret or frame is None:
-            time.sleep(0.005)
+            time.sleep(0.002)
             continue
 
+        last_frame_id = frame_id
         frame_counter += 1
 
         if frame.shape[1] != target_width or frame.shape[0] != target_height:
@@ -221,9 +225,6 @@ def main():
         # Write raw uncompressed BGR image bytes to C renderer
         binary_stream.write(frame.tobytes())
         binary_stream.flush()
-
-        # Target ~30 FPS throughput
-        time.sleep(0.015)
 
     capture.release()
 

@@ -1,5 +1,7 @@
 # Build artifacts
 build/
+build-c/
+dist/
 bin/
 *.o
 *.obj
@@ -11,11 +13,18 @@ bin/
 *.a
 *.lib
 *.old*
+*.spec
+
+# Backend ignore
+attendance_recognation/
+__pycache__/
+**/__pycache__/
 
 # Local database and models
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.npz
 models/*.onnx
 .insightface/
 

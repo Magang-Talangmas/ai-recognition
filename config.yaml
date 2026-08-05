@@ -14,6 +14,7 @@ person_detection:
 face:
   model_pack: "buffalo_l"
   model_root: ".insightface"
+  providers: ["CPUExecutionProvider"]
   backend: "openvino"
   openvino_device: "AUTO"
   detection_size: 640
