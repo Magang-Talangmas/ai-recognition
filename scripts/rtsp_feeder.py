@@ -1,12 +1,17 @@
 """
-Real-time RTSP/Webcam Frame & Face Detection Feeder for Talangmas AI-Recognition (C Edition).
-Guarantees clean binary stream via dedicated binary stdout descriptor.
+High-Performance Zero-Latency Async RTSP Substream Feeder for Talangmas AI-Recognition (C Edition).
+Features:
+  - Threaded real-time RTSP frame grabber with 0-buffer lag (drops stale frames).
+  - Asynchronous / multi-threaded SCRFD + ArcFace (OpenVINO) face detection.
+  - Sliced RTSP substream URL configuration support.
+  - Dedicated binary pipe isolation (immune to stdout text contamination).
 """
 
 import sys
 import os
 import time
 import struct
+import threading
 import numpy as np
 
 # Duplicate real binary stdout fd before any library imports or prints
@@ -25,13 +30,116 @@ binary_stream = os.fdopen(REAL_STDOUT_FD, "wb", buffering=0)
 
 MAGIC = 0x53414D54  # 'TMAS' in little endian
 
+class ZeroLatencyRTSPCapture:
+    """Threaded RTSP frame grabber that eliminates buffer accumulation and lag."""
+    def __init__(self, source):
+        import cv2
+        self.cv2 = cv2
+        self.source = int(source) if isinstance(source, str) and source.isdigit() else source
+        
+        # Aggressive low-latency flags for FFmpeg RTSP backend
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32|analyzeduration;0"
+        )
+        
+        self.cap = None
+        self.latest_frame = None
+        self.lock = threading.Lock()
+        self.running = True
+        self.is_connected = False
+        
+        self._connect()
+        self.thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.thread.start()
+
+    def _connect(self):
+        try:
+            if self.cap is not None:
+                self.cap.release()
+            
+            is_rtsp = isinstance(self.source, str) and self.source.startswith("rtsp")
+            backend = self.cv2.CAP_FFMPEG if is_rtsp else self.cv2.CAP_ANY
+            self.cap = self.cv2.VideoCapture(self.source, backend)
+            self.cap.set(self.cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            if self.cap.isOpened():
+                self.is_connected = True
+                sys.stderr.write(f"[Feeder] Substream connected: {self.source}\n")
+            else:
+                self.is_connected = False
+                sys.stderr.write(f"[Feeder] Warning: Connection failed to {self.source}\n")
+        except Exception as e:
+            self.is_connected = False
+            sys.stderr.write(f"[Feeder] Connection error: {e}\n")
+
+    def _capture_loop(self):
+        while self.running:
+            if not self.is_connected or self.cap is None or not self.cap.isOpened():
+                time.sleep(1.0)
+                self._connect()
+                continue
+            
+            ret, frame = self.cap.read()
+            if ret and frame is not None:
+                with self.lock:
+                    self.latest_frame = frame
+            else:
+                time.sleep(0.01)
+
+    def read_fresh(self):
+        with self.lock:
+            if self.latest_frame is not None:
+                return True, self.latest_frame.copy()
+            return False, None
+
+    def release(self):
+        self.running = False
+        if self.cap is not None:
+            self.cap.release()
+
+class AsyncFaceDetector:
+    """Decoupled background face detector to maintain 30+ FPS stream throughput."""
+    def __init__(self, face_engine):
+        self.engine = face_engine
+        self.pending_frame = None
+        self.latest_faces = []
+        self.lock = threading.Lock()
+        self.running = True
+        
+        if self.engine is not None:
+            self.thread = threading.Thread(target=self._detect_loop, daemon=True)
+            self.thread.start()
+
+    def submit_frame(self, frame):
+        with self.lock:
+            self.pending_frame = frame
+
+    def get_faces(self):
+        with self.lock:
+            return list(self.latest_faces)
+
+    def _detect_loop(self):
+        while self.running:
+            frame_to_process = None
+            with self.lock:
+                if self.pending_frame is not None:
+                    frame_to_process = self.pending_frame
+                    self.pending_frame = None
+            
+            if frame_to_process is not None and self.engine is not None:
+                try:
+                    detected = self.engine.detect(frame_to_process)
+                    with self.lock:
+                        self.latest_faces = detected
+                except Exception:
+                    pass
+            else:
+                time.sleep(0.005)
+
 def main():
     source = sys.argv[1] if len(sys.argv) > 1 else "0"
     target_width = int(sys.argv[2]) if len(sys.argv) > 2 else 640
     target_height = int(sys.argv[3]) if len(sys.argv) > 3 else 480
-
-    if source.isdigit():
-        source = int(source)
 
     try:
         import cv2
@@ -58,42 +166,38 @@ def main():
         cfg_file = next((c for c in cfg_candidates if os.path.exists(c)), "config.yaml")
         cfg = load_config(cfg_file)
         face_engine = FaceEngine(cfg.face)
-        sys.stderr.write(f"[Feeder] Real FaceEngine (SCRFD + ArcFace / OpenVINO) initialized with {cfg_file}\n")
+        sys.stderr.write(f"[Feeder] High-speed FaceEngine (SCRFD + ArcFace / OpenVINO) ready ({cfg_file})\n")
     except Exception as e:
-        sys.stderr.write(f"[Feeder] FaceEngine load info: {e}\n")
+        sys.stderr.write(f"[Feeder] FaceEngine notice: {e}\n")
 
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|max_delay;500000"
-    cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG if isinstance(source, str) and source.startswith("rtsp") else cv2.CAP_ANY)
+    capture = ZeroLatencyRTSPCapture(source)
+    detector = AsyncFaceDetector(face_engine)
 
-    if not cap.isOpened():
-        sys.stderr.write(f"[Feeder] Error: Could not open camera source: {source}\n")
-        sys.exit(1)
-
-    sys.stderr.write(f"[Feeder] Successfully connected to camera: {source}\n")
+    frame_counter = 0
 
     while True:
-        ret, frame = cap.read()
+        ret, frame = capture.read_fresh()
         if not ret or frame is None:
             time.sleep(0.005)
             continue
 
+        frame_counter += 1
+
         if frame.shape[1] != target_width or frame.shape[0] != target_height:
             frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
 
-        faces = []
-        if face_engine is not None:
-            try:
-                faces = face_engine.detect(frame)
-            except Exception:
-                faces = []
+        # Trigger background face detection every 2-3 frames for ultra-smooth responsiveness
+        if frame_counter % 2 == 0:
+            detector.submit_frame(frame)
 
+        faces = detector.get_faces()
         num_faces = min(len(faces), 16)
         
-        # Build header: uint32 magic, uint32 width, uint32 height, uint32 num_faces
+        # Build packet header: uint32 magic, uint32 width, uint32 height, uint32 num_faces
         header = struct.pack("<IIII", MAGIC, target_width, target_height, num_faces)
         binary_stream.write(header)
 
-        # Write detected faces metadata
+        # Write detected faces metadata & ArcFace embeddings
         for i in range(num_faces):
             f = faces[i]
             bbox = f.bbox
@@ -101,25 +205,27 @@ def main():
             det_score = float(f.detection_score)
             blur_score = float(f.blur_score)
             
-            # Key landmarks
             lm_x = [x1 + (x2 - x1) * 0.3, x1 + (x2 - x1) * 0.7, x1 + (x2 - x1) * 0.5, x1 + (x2 - x1) * 0.35, x1 + (x2 - x1) * 0.65]
             lm_y = [y1 + (y2 - y1) * 0.35, y1 + (y2 - y1) * 0.35, y1 + (y2 - y1) * 0.55, y1 + (y2 - y1) * 0.75, y1 + (y2 - y1) * 0.75]
             
             face_meta = struct.pack("<ffffff5f5f", x1, y1, x2, y2, det_score, blur_score, *lm_x, *lm_y)
             binary_stream.write(face_meta)
 
-            # 512 floats embedding
+            # 512-dim ArcFace embedding vector
             emb = f.embedding.astype(np.float32)
             if len(emb) == 512:
                 binary_stream.write(emb.tobytes())
             else:
                 binary_stream.write(b'\x00' * (512 * 4))
 
-        # Write raw BGR image bytes
+        # Write raw uncompressed BGR image bytes to C renderer
         binary_stream.write(frame.tobytes())
         binary_stream.flush()
 
-    cap.release()
+        # Target ~30 FPS throughput
+        time.sleep(0.015)
+
+    capture.release()
 
 if __name__ == "__main__":
     main()

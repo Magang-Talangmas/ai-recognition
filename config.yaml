@@ -1,7 +1,7 @@
 camera:
   source: "${CAMERA_SOURCE}"
   camera_id: "${CAMERA_ID}"
-  process_every_n_frames: 10
+  process_every_n_frames: 1
   reconnect_delay_seconds: 3
   show_preview: true
 
@@ -30,11 +30,11 @@ attendance:
   inside_is_below_line: true
   duplicate_cooldown_seconds: 300
   event_database: "data/attendance.db"
-  embedding_file: "data/embeddings.bin"
+  embedding_file: "${EMBEDDING_FILE_PATH}"
   allow_insecure_no_liveness: true
 
 backend:
   api_url: "${BACKEND_API_URL}"
-  api_key: "${BACKEND_API_KEY}"
+  api_key: "${ML_API_KEY}"
   enabled: true
   timeout: 4.0

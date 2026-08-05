@@ -135,19 +135,9 @@ int main(int argc, char **argv) {
             fflush(stdout);
         }
 
-        /* Clean stale centroid tracks every 5 seconds */
+        /* Clean stale centroid tracks periodically */
         if (frame_index % 150 == 0) {
             centroid_tracker_clean_stale(&tracker, now, 5.0);
-        }
-
-        /* Frame skipping logic */
-        if (frame_index % config.camera.process_every_n_frames != 0) {
-#ifdef _WIN32
-            Sleep(25);
-#else
-            usleep(25000);
-#endif
-            continue;
         }
 
         /* Grab Video Frame and Real Face Detections */
