@@ -271,8 +271,8 @@ void config_print(const AppConfig *cfg) {
     printf("====================================================\n");
     printf("           ACTIVE CONFIGURATION                     \n");
     printf("====================================================\n");
-    printf("[Camera] source: %s | ID: %s | skip: %d | preview: %s\n",
-           cfg->camera.source, cfg->camera.camera_id,
+    printf("[Camera] source: %s | skip: %d | preview: %s\n",
+           cfg->camera.source,
            cfg->camera.process_every_n_frames,
            cfg->camera.show_preview ? "true" : "false");
     printf("[Face] backend: %s | device: %s | size: %d | det_thresh: %.2f\n",

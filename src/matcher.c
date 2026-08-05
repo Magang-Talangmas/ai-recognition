@@ -23,10 +23,32 @@ FaceMatcher *face_matcher_create(const char *embedding_file, const FaceConfig *c
         matcher->config = *config;
     }
 
-    FILE *f = fopen(embedding_file, "rb");
+    const char *candidates[] = {
+        embedding_file,
+        "data/embeddings.bin",
+        "data\\embeddings.bin",
+        "../data/embeddings.bin",
+        "camera-c/data/embeddings.bin",
+        "D:/kamera/camera-c/data/embeddings.bin",
+        "D:\\kamera\\camera-c\\data\\embeddings.bin",
+        NULL
+    };
+
+    FILE *f = NULL;
+    const char *found_path = NULL;
+
+    for (int i = 0; candidates[i] != NULL; i++) {
+        if (strlen(candidates[i]) == 0) continue;
+        f = fopen(candidates[i], "rb");
+        if (f) {
+            found_path = candidates[i];
+            break;
+        }
+    }
+
     if (!f) {
-        /* If binary file doesn't exist, try loading from csv / text fallback or return empty */
-        printf("[Matcher] Info: Template file '%s' not found or empty. Enroll faces to populate.\n", embedding_file);
+        printf("[Matcher] Info: Template file '%s' not found. Enroll faces to populate.\n",
+               embedding_file ? embedding_file : "data/embeddings.bin");
         return matcher;
     }
 
@@ -70,7 +92,7 @@ FaceMatcher *face_matcher_create(const char *embedding_file, const FaceConfig *c
     }
 
     fclose(f);
-    printf("[Matcher] Loaded %d enrolled employee template(s) from '%s'\n", matcher->count, embedding_file);
+    printf("[Matcher] Loaded %d enrolled employee template(s) from '%s'\n", matcher->count, found_path);
     return matcher;
 }
 
@@ -148,18 +170,13 @@ int face_matcher_save_database(
     if (!filepath || !employee_ids || !templates || count <= 0) return -1;
 
     FILE *f = fopen(filepath, "wb");
-    if (!f) {
-        fprintf(stderr, "[Matcher] Error: Cannot open file '%s' for writing\n", filepath);
-        return -1;
-    }
+    if (!f) return -1;
 
-    char magic[8] = {'F', 'A', 'C', 'E', 'S', '1', '\0', '\0'};
-    int32_t count_i32 = (int32_t)count;
-    int32_t dim_i32 = (int32_t)FACE_EMBEDDING_DIM;
-
-    fwrite(magic, 1, 8, f);
-    fwrite(&count_i32, sizeof(int32_t), 1, f);
-    fwrite(&dim_i32, sizeof(int32_t), 1, f);
+    fwrite("FACES1\0\0", 1, 8, f);
+    int32_t c = (int32_t)count;
+    int32_t d = (int32_t)FACE_EMBEDDING_DIM;
+    fwrite(&c, sizeof(int32_t), 1, f);
+    fwrite(&d, sizeof(int32_t), 1, f);
 
     for (int i = 0; i < count; i++) {
         fwrite(employee_ids[i], 1, 128, f);
@@ -167,6 +184,5 @@ int face_matcher_save_database(
     }
 
     fclose(f);
-    printf("[Matcher] Successfully saved %d employee template(s) to '%s'\n", count, filepath);
     return 0;
 }

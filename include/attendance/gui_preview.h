@@ -21,14 +21,12 @@ void gui_window_destroy(GuiWindow *win);
 /* Process Windows events (keys, close button). Returns false if window was closed or 'q'/ESC pressed */
 bool gui_window_process_events(GuiWindow *win);
 
-/* Render frame with bounding boxes, HUD overlay, and line crossing to window */
+/* Render frame with bounding boxes, person names, and minimal HUD (FPS & inference) */
 void gui_window_render(
     GuiWindow *win,
     const ImageBuffer *frame,
     const FaceResult *faces,
     int num_faces,
-    const CentroidTracker *tracker,
-    float line_y_ratio,
     float display_fps,
     float inference_ms,
     const char *last_event_msg

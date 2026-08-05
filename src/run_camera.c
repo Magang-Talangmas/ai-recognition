@@ -130,8 +130,7 @@ int main(int argc, char **argv) {
             current_fps = (double)fps_frame_count / (now - last_fps_time);
             fps_frame_count = 0;
             last_fps_time = now;
-            printf("[Stream Active] FPS: %.1f | Frame: %d | Active Tracks: %d\n",
-                   current_fps, frame_index, tracker.count);
+            printf("[Stream Active] FPS: %.1f | Frame: %d\n", current_fps, frame_index);
             fflush(stdout);
         }
 
@@ -159,9 +158,16 @@ int main(int argc, char **argv) {
         for (int i = 0; i < num_faces; i++) {
             FaceResult *face = &faces[i];
             int64_t track_id = centroid_tracker_update_face(&tracker, &face->bbox, now);
+            face->track_id = track_id;
 
             if (face->has_embedding) {
                 MatchResult match = face_matcher_match(matcher, face->embedding);
+                face->match_score = match.score;
+
+                if (match.is_matched && match.employee_id[0] != '\0') {
+                    strncpy(face->matched_name, match.employee_id, sizeof(face->matched_name) - 1);
+                    face->is_recognized = true;
+                }
 
                 /* Find track object */
                 for (int t = 0; t < tracker.count; t++) {
@@ -172,47 +178,45 @@ int main(int argc, char **argv) {
                                         match.score,
                                         config.face.vote_window);
 
-                        char stable_id[128] = {0};
+                        char stable_name[128] = {0};
                         float stable_score = 0.0f;
                         if (track_vote_get_stable(&tf->vote_queue,
                                                  config.face.votes_required,
-                                                 stable_id, sizeof(stable_id),
+                                                 stable_name, sizeof(stable_name),
                                                  &stable_score)) {
                             
+                            /* If confirmed through temporal voting, ensure face label has name */
+                            strncpy(face->matched_name, stable_name, sizeof(face->matched_name) - 1);
+                            face->match_score = stable_score;
+                            face->is_recognized = true;
+
                             if (!tf->is_confirmed) {
                                 tf->is_confirmed = true;
-                                strncpy(tf->confirmed_id, stable_id, sizeof(tf->confirmed_id) - 1);
+                                strncpy(tf->confirmed_id, stable_name, sizeof(tf->confirmed_id) - 1);
                                 tf->confirmed_score = stable_score;
-
-                                /* Determine crossing direction */
-                                float line_y = (float)frame.height * config.attendance.line_y_ratio;
-                                int cur_side = (tf->cy >= line_y) ? 1 : -1;
-                                const char *dir = crossing_direction(tf->previous_side, cur_side, config.attendance.inside_is_below_line);
-                                if (!dir) dir = "ENTER";
 
                                 int64_t evt_id = attendance_db_create_pending_event(
                                     db,
                                     config.camera.camera_id,
                                     track_id,
-                                    stable_id,
-                                    dir,
-                                    "PENDING_CONFIRMATION",
+                                    stable_name,
+                                    "ABSENSI",
+                                    "CONFIRMED",
                                     stable_score
                                 );
 
                                 if (evt_id > 0) {
                                     snprintf(last_event_msg, sizeof(last_event_msg),
-                                             "[SUCCESS] %s: %s (Score: %.2f)", dir, stable_id, stable_score);
+                                             "[ABSENSI] %s", stable_name);
 
-                                    printf("\n[EVENT DETECTED] ID=%lld | Track=%lld | Employee=%s | Score=%.3f | Dir=%s\n",
-                                           (long long)evt_id, (long long)track_id, stable_id, stable_score, dir);
+                                    printf("\n[ABSENSI] %s terdeteksi\n", stable_name);
 
                                     if (dispatcher) {
                                         char evt_str[64];
                                         snprintf(evt_str, sizeof(evt_str), "%lld", (long long)evt_id);
                                         backend_dispatcher_dispatch_checkin(
                                             dispatcher,
-                                            stable_id,
+                                            stable_name,
                                             stable_score,
                                             config.camera.camera_id,
                                             evt_str,
@@ -220,8 +224,11 @@ int main(int argc, char **argv) {
                                         );
                                     }
                                 }
-                                tf->previous_side = cur_side;
                             }
+                        } else if (tf->is_confirmed && tf->confirmed_id[0] != '\0') {
+                            strncpy(face->matched_name, tf->confirmed_id, sizeof(face->matched_name) - 1);
+                            face->match_score = tf->confirmed_score;
+                            face->is_recognized = true;
                         }
                         break;
                     }
@@ -236,8 +243,6 @@ int main(int argc, char **argv) {
                 &frame,
                 faces,
                 num_faces,
-                &tracker,
-                config.attendance.line_y_ratio,
                 (float)current_fps,
                 (float)inference_ms,
                 last_event_msg
@@ -245,9 +250,9 @@ int main(int argc, char **argv) {
         }
 
 #ifdef _WIN32
-        Sleep(25);
+        Sleep(2);
 #else
-        usleep(25000);
+        usleep(2000);
 #endif
     }
 

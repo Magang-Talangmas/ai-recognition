@@ -32,6 +32,10 @@ typedef struct {
     bool quality_ok;
     float blur_score;
     float detection_score;
+    char matched_name[128];
+    float match_score;
+    int64_t track_id;
+    bool is_recognized;
 } FaceResult;
 
 typedef struct {
