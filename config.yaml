@@ -1,0 +1,40 @@
+camera:
+  source: "${CAMERA_SOURCE}"
+  camera_id: "${CAMERA_ID}"
+  process_every_n_frames: 10
+  reconnect_delay_seconds: 3
+  show_preview: true
+
+person_detection:
+  model_path: "models/yolov10n.onnx"
+  confidence: 0.40
+  tracker: "bytetrack"
+  bbox_padding: 0
+
+face:
+  model_pack: "buffalo_l"
+  model_root: ".insightface"
+  backend: "openvino"
+  openvino_device: "AUTO"
+  detection_size: 640
+  detection_threshold: 0.50
+  min_face_size: 10
+  blur_threshold: 30.0
+  match_threshold: 0.25
+  match_margin: 0.07
+  vote_window: 5
+  votes_required: 3
+
+attendance:
+  line_y_ratio: 0.62
+  inside_is_below_line: true
+  duplicate_cooldown_seconds: 300
+  event_database: "data/attendance.db"
+  embedding_file: "data/embeddings.bin"
+  allow_insecure_no_liveness: true
+
+backend:
+  api_url: "${BACKEND_API_URL}"
+  api_key: "${BACKEND_API_KEY}"
+  enabled: true
+  timeout: 4.0

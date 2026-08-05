@@ -1,0 +1,27 @@
+# Build artifacts
+build/
+bin/
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# Local database and models
+data/*.db
+data/*.db-wal
+data/*.db-shm
+models/*.onnx
+.insightface/
+
+# Environment configurations
+.env
+.env.local
+
+# IDE
+.vscode/
+.vs/
+.idea/
