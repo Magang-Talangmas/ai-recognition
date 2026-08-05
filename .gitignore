@@ -12,11 +12,21 @@ bin/
 *.lib
 *.old*
 
-# Local database and models
+# Python virtual environment & cache
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local database, face dataset & large model weights
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.npz
+data/enroll/
 models/*.onnx
+models/openvino_fp16/*.bin
 .insightface/
 
 # Environment configurations

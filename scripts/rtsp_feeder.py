@@ -147,26 +147,46 @@ def main():
         sys.stderr.write("[Feeder] Error: cv2 not found.\n")
         sys.exit(1)
 
-    # Initialize Face Engine (SCRFD + ArcFace / OpenVINO)
+    # Initialize Face Engine (MTCNN + OpenVINO FP16)
     face_engine = None
     try:
-        candidate_paths = [
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "ai-recognition")),
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ai-recognition")),
-            "D:/kamera/ai-recognition"
-        ]
-        for p in candidate_paths:
-            if os.path.exists(p) and p not in sys.path:
-                sys.path.insert(0, p)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if base_dir not in sys.path:
+            sys.path.insert(0, base_dir)
 
-        from attendance_cv.config import load_config
-        from attendance_cv.face_engine import FaceEngine
-        
-        cfg_candidates = ["config.yaml", "../config.yaml", "d:/kamera/camera-c/config.yaml", "d:/kamera/ai-recognition/config.yaml"]
-        cfg_file = next((c for c in cfg_candidates if os.path.exists(c)), "config.yaml")
-        cfg = load_config(cfg_file)
-        face_engine = FaceEngine(cfg.face)
-        sys.stderr.write(f"[Feeder] High-speed FaceEngine (SCRFD + ArcFace / OpenVINO) ready ({cfg_file})\n")
+        from src.openvino_mtcnn import OpenVINOMTCNN
+        from src.openvino_face_engine import OpenVINOFaceEngine
+
+        class StandaloneOpenVINOEngine:
+            def __init__(self, device="CPU"):
+                self.detector = OpenVINOMTCNN(device=device)
+                self.feature_engine = OpenVINOFaceEngine(device=device)
+
+            def detect(self, frame):
+                boxes, landmarks = self.detector.detect(frame)
+                if len(boxes) == 0:
+                    return []
+
+                results = []
+                for i in range(len(boxes)):
+                    box = boxes[i]
+                    lm = landmarks[i]
+                    aligned = self.detector.align_face(frame, lm, target_size=(160, 160))
+                    emb = self.feature_engine.extract_embedding(aligned)
+
+                    class FaceObj:
+                        pass
+                    f = FaceObj()
+                    f.bbox = box[:4]
+                    f.detection_score = float(box[4])
+                    f.blur_score = 50.0
+                    f.landmarks = lm
+                    f.embedding = emb
+                    results.append(f)
+                return results
+
+        face_engine = StandaloneOpenVINOEngine(device="CPU")
+        sys.stderr.write("[Feeder] Standalone OpenVINO MTCNN + FaceEngine FP16 initialized.\n")
     except Exception as e:
         sys.stderr.write(f"[Feeder] FaceEngine notice: {e}\n")
 
@@ -205,8 +225,12 @@ def main():
             det_score = float(f.detection_score)
             blur_score = float(f.blur_score)
             
-            lm_x = [x1 + (x2 - x1) * 0.3, x1 + (x2 - x1) * 0.7, x1 + (x2 - x1) * 0.5, x1 + (x2 - x1) * 0.35, x1 + (x2 - x1) * 0.65]
-            lm_y = [y1 + (y2 - y1) * 0.35, y1 + (y2 - y1) * 0.35, y1 + (y2 - y1) * 0.55, y1 + (y2 - y1) * 0.75, y1 + (y2 - y1) * 0.75]
+            if hasattr(f, 'landmarks') and f.landmarks is not None and len(f.landmarks) == 5:
+                lm_x = [float(f.landmarks[k][0]) for k in range(5)]
+                lm_y = [float(f.landmarks[k][1]) for k in range(5)]
+            else:
+                lm_x = [x1 + (x2 - x1) * 0.3, x1 + (x2 - x1) * 0.7, x1 + (x2 - x1) * 0.5, x1 + (x2 - x1) * 0.35, x1 + (x2 - x1) * 0.65]
+                lm_y = [y1 + (y2 - y1) * 0.35, y1 + (y2 - y1) * 0.35, y1 + (y2 - y1) * 0.55, y1 + (y2 - y1) * 0.75, y1 + (y2 - y1) * 0.75]
             
             face_meta = struct.pack("<ffffff5f5f", x1, y1, x2, y2, det_score, blur_score, *lm_x, *lm_y)
             binary_stream.write(face_meta)

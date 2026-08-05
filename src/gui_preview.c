@@ -30,24 +30,41 @@ static FaceImageCache* get_enrolled_face(const char *name) {
     
     if (num_face_cache >= MAX_FACE_CACHE) return NULL;
     
-    char search_path[512];
-    snprintf(search_path, sizeof(search_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\*.jpg", name);
+    const char *prefixes[] = {
+        "data\\enroll\\%s\\",
+        "data/enroll/%s/",
+        "..\\data\\enroll\\%s\\",
+        NULL
+    };
+    const char *exts[] = {"*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp", NULL};
     
+    char found_dir[512] = {0};
     WIN32_FIND_DATAA find_data;
-    HANDLE hFind = FindFirstFileA(search_path, &find_data);
-    if (hFind == INVALID_HANDLE_VALUE) {
-        snprintf(search_path, sizeof(search_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\*.png", name);
-        hFind = FindFirstFileA(search_path, &find_data);
-        if (hFind == INVALID_HANDLE_VALUE) {
-            strcpy(face_cache[num_face_cache].name, name);
-            face_cache[num_face_cache].hbm_crop = NULL;
-            num_face_cache++;
-            return NULL;
+    HANDLE hFind = INVALID_HANDLE_VALUE;
+
+    for (int i = 0; prefixes[i] != NULL && hFind == INVALID_HANDLE_VALUE; i++) {
+        char dir_buf[512];
+        snprintf(dir_buf, sizeof(dir_buf), prefixes[i], name);
+        for (int j = 0; exts[j] != NULL; j++) {
+            char search_path[512];
+            snprintf(search_path, sizeof(search_path), "%s%s", dir_buf, exts[j]);
+            hFind = FindFirstFileA(search_path, &find_data);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                strncpy(found_dir, dir_buf, sizeof(found_dir) - 1);
+                break;
+            }
         }
+    }
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        strcpy(face_cache[num_face_cache].name, name);
+        face_cache[num_face_cache].hbm_crop = NULL;
+        num_face_cache++;
+        return NULL;
     }
     
     char img_path[512];
-    snprintf(img_path, sizeof(img_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\%s", name, find_data.cFileName);
+    snprintf(img_path, sizeof(img_path), "%s%s", found_dir, find_data.cFileName);
     FindClose(hFind);
     
     int w, h, c;
