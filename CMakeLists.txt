@@ -17,6 +17,8 @@ set(CORE_SOURCES
     src/matcher.c
     src/vision_utils.c
     src/api_dispatcher.c
+    src/gui_preview.c
+    src/video_capture.c
     src/third_party/cJSON.c
 )
 
@@ -44,7 +46,7 @@ endif()
 # System Libraries
 set(EXTRA_LIBS ${SQLITE3_LIBS})
 if (WIN32)
-    list(APPEND EXTRA_LIBS winhttp ws2_32)
+    list(APPEND EXTRA_LIBS winhttp ws2_32 gdi32 user32)
 else()
     list(APPEND EXTRA_LIBS pthread m)
 endif()
