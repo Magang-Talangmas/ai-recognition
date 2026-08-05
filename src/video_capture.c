@@ -7,10 +7,10 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#include <io.h>
-#include <fcntl.h>
 #else
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #endif
 
 #define MAGIC_PACKET 0x53414D54 /* 'TMAS' */
@@ -22,7 +22,13 @@ struct VideoCapture {
     uint8_t *frame_buffer;
     int frame_count;
     double start_time;
+#ifdef _WIN32
+    HANDLE h_read_pipe;
+    HANDLE h_process;
+#else
     FILE *pipe_fp;
+    pid_t pid;
+#endif
     bool is_live;
 };
 
@@ -71,44 +77,101 @@ VideoCapture *video_capture_open(const char *source, int target_width, int targe
     }
 
     const char *py = find_python_executable();
-    char cmd[1024];
-
     const char *script_path = "scripts\\rtsp_feeder.py";
     if (GetFileAttributesA(script_path) == INVALID_FILE_ATTRIBUTES) {
         script_path = "camera-c\\scripts\\rtsp_feeder.py";
     }
 
-    snprintf(cmd, sizeof(cmd), "\"%s\" -u \"%s\" \"%s\" %d %d",
+    char cmdline[2048];
+    snprintf(cmdline, sizeof(cmdline), "\"%s\" -u \"%s\" \"%s\" %d %d",
              py, script_path, cap->source, cap->width, cap->height);
 
-    printf("[VideoCapture] Launching real-time camera stream feeder...\n");
-    printf("[VideoCapture] Executable: %s\n", py);
+    printf("[VideoCapture] Spawning real-time CCTV stream feeder...\n");
+    printf("[VideoCapture] Stream Source: %s\n", cap->source);
 
 #ifdef _WIN32
-    cap->pipe_fp = _popen(cmd, "rb");
-#else
-    cap->pipe_fp = popen(cmd, "r");
-#endif
+    SECURITY_ATTRIBUTES sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = NULL;
 
-    if (cap->pipe_fp) {
-        printf("[VideoCapture] Live video stream feeder process active.\n");
-        cap->is_live = true;
-    } else {
-        printf("[VideoCapture] Warning: Could not launch live video feeder.\n");
+    HANDLE h_read = NULL;
+    HANDLE h_write = NULL;
+
+    if (CreatePipe(&h_read, &h_write, &sa, 4 * 1024 * 1024)) {
+        SetHandleInformation(h_read, HANDLE_FLAG_INHERIT, 0);
+
+        STARTUPINFOA si;
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        si.hStdOutput = h_write;
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        si.dwFlags |= STARTF_USESTDHANDLES;
+
+        PROCESS_INFORMATION pi;
+        memset(&pi, 0, sizeof(pi));
+
+        BOOL success = CreateProcessA(
+            NULL,
+            cmdline,
+            NULL,
+            NULL,
+            TRUE,
+            0,
+            NULL,
+            NULL,
+            &si,
+            &pi
+        );
+
+        CloseHandle(h_write); /* Close write end in parent */
+
+        if (success) {
+            cap->h_read_pipe = h_read;
+            cap->h_process = pi.hProcess;
+            CloseHandle(pi.hThread);
+            cap->is_live = true;
+            printf("[VideoCapture] CCTV stream feeder connected successfully.\n");
+        } else {
+            CloseHandle(h_read);
+            fprintf(stderr, "[VideoCapture] Failed to launch feeder process (err=%lu)\n", GetLastError());
+        }
     }
+#else
+    cap->pipe_fp = popen(cmdline, "r");
+    if (cap->pipe_fp) {
+        cap->is_live = true;
+    }
+#endif
 
     return cap;
 }
 
-static bool read_exact(FILE *fp, void *buf, size_t bytes) {
+static bool read_exact_bytes(VideoCapture *cap, void *buf, size_t bytes) {
     uint8_t *p = (uint8_t *)buf;
     size_t total = 0;
+
+#ifdef _WIN32
+    if (!cap->h_read_pipe) return false;
     while (total < bytes) {
-        size_t n = fread(p + total, 1, bytes - total, fp);
+        DWORD n = 0;
+        DWORD to_read = (DWORD)(bytes - total);
+        if (!ReadFile(cap->h_read_pipe, p + total, to_read, &n, NULL) || n == 0) {
+            return false;
+        }
+        total += n;
+    }
+    return true;
+#else
+    if (!cap->pipe_fp) return false;
+    while (total < bytes) {
+        size_t n = fread(p + total, 1, bytes - total, cap->pipe_fp);
         if (n <= 0) return false;
         total += n;
     }
     return true;
+#endif
 }
 
 bool video_capture_read_frame(
@@ -130,59 +193,55 @@ bool video_capture_read_frame(
     int detected_count = 0;
     bool got_live_frame = false;
 
-    if (cap->pipe_fp) {
-        uint32_t header[4] = {0}; /* magic, width, height, num_faces */
-        if (read_exact(cap->pipe_fp, header, sizeof(header)) && header[0] == MAGIC_PACKET) {
-            int pkt_w = (int)header[1];
-            int pkt_h = (int)header[2];
-            int pkt_faces = (int)header[3];
+    uint32_t header[4] = {0}; /* magic, width, height, num_faces */
+    if (read_exact_bytes(cap, header, sizeof(header)) && header[0] == MAGIC_PACKET) {
+        int pkt_w = (int)header[1];
+        int pkt_h = (int)header[2];
+        int pkt_faces = (int)header[3];
 
-            if (pkt_w == w && pkt_h == h) {
-                /* Read each detected face */
-                for (int i = 0; i < pkt_faces; i++) {
-                    struct {
-                        float x1, y1, x2, y2;
-                        float det_score;
-                        float blur_score;
-                        float lm_x[5];
-                        float lm_y[5];
-                    } meta;
+        if (pkt_w == w && pkt_h == h) {
+            for (int i = 0; i < pkt_faces; i++) {
+                struct {
+                    float x1, y1, x2, y2;
+                    float det_score;
+                    float blur_score;
+                    float lm_x[5];
+                    float lm_y[5];
+                } meta;
 
-                    float emb[FACE_EMBEDDING_DIM];
+                float emb[FACE_EMBEDDING_DIM];
 
-                    if (read_exact(cap->pipe_fp, &meta, sizeof(meta)) &&
-                        read_exact(cap->pipe_fp, emb, sizeof(emb))) {
+                if (read_exact_bytes(cap, &meta, sizeof(meta)) &&
+                    read_exact_bytes(cap, emb, sizeof(emb))) {
 
-                        if (out_faces && detected_count < max_faces) {
-                            FaceResult *f = &out_faces[detected_count++];
-                            memset(f, 0, sizeof(FaceResult));
-                            f->bbox.x1 = meta.x1;
-                            f->bbox.y1 = meta.y1;
-                            f->bbox.x2 = meta.x2;
-                            f->bbox.y2 = meta.y2;
-                            f->detection_score = meta.det_score;
-                            f->blur_score = meta.blur_score;
-                            for (int k = 0; k < 5; k++) {
-                                f->landmarks.x[k] = meta.lm_x[k];
-                                f->landmarks.y[k] = meta.lm_y[k];
-                            }
-                            memcpy(f->embedding, emb, sizeof(emb));
-                            f->has_embedding = true;
-                            f->quality_ok = true;
+                    if (out_faces && detected_count < max_faces) {
+                        FaceResult *f = &out_faces[detected_count++];
+                        memset(f, 0, sizeof(FaceResult));
+                        f->bbox.x1 = meta.x1;
+                        f->bbox.y1 = meta.y1;
+                        f->bbox.x2 = meta.x2;
+                        f->bbox.y2 = meta.y2;
+                        f->detection_score = meta.det_score;
+                        f->blur_score = meta.blur_score;
+                        for (int k = 0; k < 5; k++) {
+                            f->landmarks.x[k] = meta.lm_x[k];
+                            f->landmarks.y[k] = meta.lm_y[k];
                         }
+                        memcpy(f->embedding, emb, sizeof(emb));
+                        f->has_embedding = true;
+                        f->quality_ok = true;
                     }
                 }
+            }
 
-                /* Read raw image bytes */
-                if (read_exact(cap->pipe_fp, buf, img_bytes)) {
-                    got_live_frame = true;
-                }
+            if (read_exact_bytes(cap, buf, img_bytes)) {
+                got_live_frame = true;
             }
         }
     }
 
     if (!got_live_frame) {
-        /* Fallback synthetic test background */
+        /* Fallback synthetic pattern when stream is connecting/reconnecting */
         for (int y = 0; y < h; y++) {
             uint8_t bg_val = (uint8_t)(25 + (y * 20 / h));
             for (int x = 0; x < w; x++) {
@@ -232,14 +291,22 @@ bool video_capture_read_frame(
 
 void video_capture_close(VideoCapture *cap) {
     if (!cap) return;
-    if (cap->pipe_fp) {
 #ifdef _WIN32
-        _pclose(cap->pipe_fp);
+    if (cap->h_read_pipe) {
+        CloseHandle(cap->h_read_pipe);
+        cap->h_read_pipe = NULL;
+    }
+    if (cap->h_process) {
+        TerminateProcess(cap->h_process, 0);
+        CloseHandle(cap->h_process);
+        cap->h_process = NULL;
+    }
 #else
+    if (cap->pipe_fp) {
         pclose(cap->pipe_fp);
-#endif
         cap->pipe_fp = NULL;
     }
+#endif
     if (cap->frame_buffer) {
         free(cap->frame_buffer);
     }

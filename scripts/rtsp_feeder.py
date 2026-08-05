@@ -24,7 +24,6 @@ def main():
     target_width = int(sys.argv[2]) if len(sys.argv) > 2 else 640
     target_height = int(sys.argv[3]) if len(sys.argv) > 3 else 480
 
-    # Convert numeric camera source
     if source.isdigit():
         source = int(source)
 
@@ -37,16 +36,25 @@ def main():
     # Initialize Face Engine (InsightFace / SCRFD / ArcFace)
     face_engine = None
     try:
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "ai-recognition")))
+        candidate_paths = [
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "ai-recognition")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ai-recognition")),
+            "D:/kamera/ai-recognition"
+        ]
+        for p in candidate_paths:
+            if os.path.exists(p) and p not in sys.path:
+                sys.path.insert(0, p)
+
         from attendance_cv.config import load_config
         from attendance_cv.face_engine import FaceEngine
         
-        cfg_path = "config.yaml" if os.path.exists("config.yaml") else "../config.yaml"
-        cfg = load_config(cfg_path)
+        cfg_candidates = ["config.yaml", "../config.yaml", "d:/kamera/camera-c/config.yaml", "d:/kamera/ai-recognition/config.yaml"]
+        cfg_file = next((c for c in cfg_candidates if os.path.exists(c)), "config.yaml")
+        cfg = load_config(cfg_file)
         face_engine = FaceEngine(cfg.face)
-        sys.stderr.write("[Feeder] Real FaceEngine (SCRFD + ArcFace) loaded successfully.\n")
+        sys.stderr.write(f"[Feeder] Real FaceEngine (SCRFD + ArcFace / OpenVINO) active with config: {cfg_file}\n")
     except Exception as e:
-        sys.stderr.write(f"[Feeder] Note: Using standard face detection fallback ({e})\n")
+        sys.stderr.write(f"[Feeder] Notice: FaceEngine init info: {e}\n")
 
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|max_delay;500000"
     cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG if isinstance(source, str) and source.startswith("rtsp") else cv2.CAP_ANY)
@@ -70,7 +78,7 @@ def main():
         if face_engine is not None:
             try:
                 faces = face_engine.detect(frame)
-            except Exception as e:
+            except Exception:
                 faces = []
 
         num_faces = min(len(faces), 16)
@@ -87,7 +95,7 @@ def main():
             det_score = float(f.detection_score)
             blur_score = float(f.blur_score)
             
-            # Default or calculated landmarks
+            # 5 key landmarks
             lm_x = [x1 + (x2 - x1) * 0.3, x1 + (x2 - x1) * 0.7, x1 + (x2 - x1) * 0.5, x1 + (x2 - x1) * 0.35, x1 + (x2 - x1) * 0.65]
             lm_y = [y1 + (y2 - y1) * 0.35, y1 + (y2 - y1) * 0.35, y1 + (y2 - y1) * 0.55, y1 + (y2 - y1) * 0.75, y1 + (y2 - y1) * 0.75]
             
