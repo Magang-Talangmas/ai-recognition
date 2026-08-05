@@ -10,6 +10,7 @@ bin/
 *.dylib
 *.a
 *.lib
+*.old*
 
 # Local database and models
 data/*.db
