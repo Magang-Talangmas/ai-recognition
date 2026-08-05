@@ -4,6 +4,7 @@ bin/
 *.o
 *.obj
 *.exe
+*.pdb
 *.dll
 *.so
 *.dylib
