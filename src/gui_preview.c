@@ -5,6 +5,105 @@
 #include <string.h>
 #include <ctype.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "third_party/stb_image.h"
+
+#ifdef _WIN32
+#include <windows.h>
+
+typedef struct {
+    char name[128];
+    HBITMAP hbm_crop;
+} FaceImageCache;
+
+#define MAX_FACE_CACHE 128
+static FaceImageCache face_cache[MAX_FACE_CACHE];
+static int num_face_cache = 0;
+
+static FaceImageCache* get_enrolled_face(const char *name) {
+    if (!name || name[0] == '\0') return NULL;
+    for (int i = 0; i < num_face_cache; i++) {
+        if (strcmp(face_cache[i].name, name) == 0) {
+            return face_cache[i].hbm_crop ? &face_cache[i] : NULL;
+        }
+    }
+    
+    if (num_face_cache >= MAX_FACE_CACHE) return NULL;
+    
+    char search_path[512];
+    snprintf(search_path, sizeof(search_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\*.jpg", name);
+    
+    WIN32_FIND_DATAA find_data;
+    HANDLE hFind = FindFirstFileA(search_path, &find_data);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        snprintf(search_path, sizeof(search_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\*.png", name);
+        hFind = FindFirstFileA(search_path, &find_data);
+        if (hFind == INVALID_HANDLE_VALUE) {
+            strcpy(face_cache[num_face_cache].name, name);
+            face_cache[num_face_cache].hbm_crop = NULL;
+            num_face_cache++;
+            return NULL;
+        }
+    }
+    
+    char img_path[512];
+    snprintf(img_path, sizeof(img_path), "d:\\kamera\\ai-recognition\\data\\enroll\\%s\\%s", name, find_data.cFileName);
+    FindClose(hFind);
+    
+    int w, h, c;
+    uint8_t *data = stbi_load(img_path, &w, &h, &c, 4); // Force RGBA
+    HBITMAP hbm = NULL;
+
+    if (data) {
+        // Swap R and B to make it BGRA for GDI
+        for (int i = 0; i < w * h * 4; i += 4) {
+            uint8_t temp = data[i];
+            data[i] = data[i + 2];
+            data[i + 2] = temp;
+        }
+
+        /* Pre-scale to 80x80 using GDI and store as HBITMAP */
+        HDC hdc_screen = GetDC(NULL);
+        hbm = CreateCompatibleBitmap(hdc_screen, 80, 80);
+        HDC hdc_temp = CreateCompatibleDC(hdc_screen);
+        HBITMAP old_bm = (HBITMAP)SelectObject(hdc_temp, hbm);
+
+        BITMAPINFO cbmi;
+        memset(&cbmi, 0, sizeof(cbmi));
+        cbmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        cbmi.bmiHeader.biWidth = w;
+        cbmi.bmiHeader.biHeight = -h; /* Top-down */
+        cbmi.bmiHeader.biPlanes = 1;
+        cbmi.bmiHeader.biBitCount = 32;
+        cbmi.bmiHeader.biCompression = BI_RGB;
+
+        SetStretchBltMode(hdc_temp, HALFTONE);
+        SetBrushOrgEx(hdc_temp, 0, 0, NULL);
+        StretchDIBits(
+            hdc_temp,
+            0, 0, 80, 80,
+            0, 0, w, h,
+            data,
+            &cbmi,
+            DIB_RGB_COLORS,
+            SRCCOPY
+        );
+
+        SelectObject(hdc_temp, old_bm);
+        DeleteDC(hdc_temp);
+        ReleaseDC(NULL, hdc_screen);
+
+        stbi_image_free(data); // Free the huge raw data!
+    }
+    
+    FaceImageCache *cache = &face_cache[num_face_cache++];
+    strcpy(cache->name, name);
+    cache->hbm_crop = hbm;
+    
+    return cache->hbm_crop ? cache : NULL;
+}
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -217,16 +316,17 @@ void gui_window_render(
 
     HDC hdc = win->hdc_mem;
 
+    /* Define Side Panel Width */
+    int panel_w = 260;
+    int cam_w = (w > panel_w + 320) ? (w - panel_w) : w;
+    bool has_panel = (cam_w != w);
+
     /* Coordinate scaling factors from source frame resolution to current display window */
     float scale_x = 1.0f;
     float scale_y = 1.0f;
 
-    /* 1. Paint Raw Camera Video Buffer Scaled to Full Window */
+    BITMAPINFO bmi;
     if (frame && frame->data && frame->width > 0 && frame->height > 0) {
-        scale_x = (float)w / (float)frame->width;
-        scale_y = (float)h / (float)frame->height;
-
-        BITMAPINFO bmi;
         memset(&bmi, 0, sizeof(bmi));
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bmi.bmiHeader.biWidth = frame->width;
@@ -234,12 +334,18 @@ void gui_window_render(
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 24;
         bmi.bmiHeader.biCompression = BI_RGB;
+    }
+
+    /* 1. Paint Raw Camera Video Buffer Scaled to Camera Window */
+    if (frame && frame->data && frame->width > 0 && frame->height > 0) {
+        scale_x = (float)cam_w / (float)frame->width;
+        scale_y = (float)h / (float)frame->height;
 
         SetStretchBltMode(hdc, HALFTONE);
         SetBrushOrgEx(hdc, 0, 0, NULL);
         StretchDIBits(
             hdc,
-            0, 0, w, h,
+            0, 0, cam_w, h,
             0, 0, frame->width, frame->height,
             frame->data,
             &bmi,
@@ -248,15 +354,31 @@ void gui_window_render(
         );
     } else {
         HBRUSH bg_brush = CreateSolidBrush(RGB(18, 20, 24));
-        RECT r = {0, 0, w, h};
+        RECT r = {0, 0, cam_w, h};
         FillRect(hdc, &r, bg_brush);
         DeleteObject(bg_brush);
+    }
+
+    /* 1.5. Paint Side Panel Background */
+    if (has_panel) {
+        HBRUSH panel_bg = CreateSolidBrush(RGB(22, 26, 33));
+        RECT r_panel = {cam_w, 0, w, h};
+        FillRect(hdc, &r_panel, panel_bg);
+        DeleteObject(panel_bg);
+
+        /* Panel Title */
+        SetBkMode(hdc, TRANSPARENT);
+        SelectObject(hdc, win->font_title);
+        SetTextColor(hdc, RGB(255, 255, 255));
+        TextOutA(hdc, cam_w + 16, 16, "Detected Persons", 16);
     }
 
     SetBkMode(hdc, TRANSPARENT);
     HFONT old_font = (HFONT)SelectObject(hdc, win->font_regular);
 
     /* 2. Render Detected Faces & Person Names (Scaled to Full Window) */
+    int panel_cursor_y = 50; /* Start Y position for items in the side panel */
+
     if (faces && num_faces > 0) {
         for (int i = 0; i < num_faces; i++) {
             const FaceResult *face = &faces[i];
@@ -348,6 +470,57 @@ void gui_window_render(
             /* Render Name Text */
             SetTextColor(hdc, is_match ? RGB(0, 255, 128) : RGB(0, 215, 255));
             TextOutA(hdc, bx1 + 10, badge_y + 4, disp_name, (int)strlen(disp_name));
+
+            /* 2d. Draw on Side Panel (Only if panel exists and there is space) */
+            if (has_panel && panel_cursor_y + 100 < h && is_match) {
+                int px = cam_w + 16;
+                int py = panel_cursor_y;
+                int pw = 80;
+                int ph = 80;
+
+                FaceImageCache *cache = get_enrolled_face(face->matched_name);
+
+                /* Draw background for crop */
+                RECT crop_bg_r = {px - 2, py - 2, px + pw + 2, py + ph + 2};
+                HBRUSH crop_b = CreateSolidBrush(badge_bg);
+                FillRect(hdc, &crop_bg_r, crop_b);
+                DeleteObject(crop_b);
+
+                if (cache && cache->hbm_crop) {
+                    HDC hdc_face = CreateCompatibleDC(hdc);
+                    HBITMAP old_bm = (HBITMAP)SelectObject(hdc_face, cache->hbm_crop);
+                    BitBlt(hdc, px, py, pw, ph, hdc_face, 0, 0, SRCCOPY);
+                    SelectObject(hdc_face, old_bm);
+                    DeleteDC(hdc_face);
+                } else {
+                    /* Placeholder if no image found */
+                    SelectObject(hdc, win->font_regular);
+                    SetTextColor(hdc, RGB(100, 100, 100));
+                    TextOutA(hdc, px + 20, py + 30, "No Pic", 6);
+                }
+
+                /* Draw border for crop */
+                HPEN crop_pen = CreatePen(PS_SOLID, 1, box_color);
+                old_pen = (HPEN)SelectObject(hdc, crop_pen);
+                old_brush = (HBRUSH)SelectObject(hdc, null_brush);
+                Rectangle(hdc, px, py, px + pw, py + ph);
+                SelectObject(hdc, old_brush);
+                SelectObject(hdc, old_pen);
+                DeleteObject(crop_pen);
+
+                /* Render name next to the crop */
+                SelectObject(hdc, win->font_regular);
+                SetTextColor(hdc, RGB(0, 255, 128));
+                TextOutA(hdc, px + pw + 10, py + 10, disp_name, (int)strlen(disp_name));
+                
+                SelectObject(hdc, win->font_small);
+                SetTextColor(hdc, RGB(150, 150, 150));
+                char acc_str[32];
+                snprintf(acc_str, sizeof(acc_str), "Score: %.2f", face->match_score);
+                TextOutA(hdc, px + pw + 10, py + 30, acc_str, (int)strlen(acc_str));
+
+                panel_cursor_y += ph + 16; /* Move cursor down */
+            }
         }
     }
 
