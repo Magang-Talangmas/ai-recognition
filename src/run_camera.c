@@ -9,10 +9,8 @@
 #include "attendance/matcher.h"
 #include "attendance/vision_utils.h"
 #include "attendance/api_dispatcher.h"
-
-#ifdef HAVE_OPENCV
-#include <opencv2/c/opencv.h>
-#endif
+#include "attendance/gui_preview.h"
+#include "attendance/video_capture.h"
 
 #include <signal.h>
 
@@ -91,21 +89,45 @@ int main(int argc, char **argv) {
     CentroidTracker tracker;
     centroid_tracker_init(&tracker, 150.0f);
 
+    /* Initialize Video Capture Stream */
+    VideoCapture *cap = video_capture_open(config.camera.source, 640, 480);
+    if (!cap) {
+        fprintf(stderr, "[Error] Failed to initialize video capture stream.\n");
+    }
+
+    /* Initialize Native Windows GUI Preview Window */
+    GuiWindow *win = NULL;
+    if (config.camera.show_preview) {
+        win = gui_window_create("Talangmas AI Recognition - Camera Stream (C Edition)", 640, 480);
+        if (win) {
+            printf("[GUI] Native Camera Stream Preview Window opened.\n");
+        }
+    }
+
     printf("\n[System Ready] Starting video capture stream from: %s\n", config.camera.source);
-    printf("Press Ctrl+C to stop.\n\n");
+    printf("Press Ctrl+C or close preview window (Q / ESC) to stop.\n\n");
 
     int frame_index = 0;
     double last_fps_time = get_monotonic_time_seconds();
     int fps_frame_count = 0;
+    double current_fps = 30.0;
+    char last_event_msg[128] = {0};
 
     /* Main Video Processing Loop */
     while (g_running) {
         double now = get_monotonic_time_seconds();
+
+        /* Process GUI window events (close button, Q, ESC) */
+        if (win && !gui_window_process_events(win)) {
+            printf("[GUI] Window close requested by user.\n");
+            break;
+        }
+
         frame_index++;
         fps_frame_count++;
 
         if (now - last_fps_time >= 2.0) {
-            double current_fps = (double)fps_frame_count / (now - last_fps_time);
+            current_fps = (double)fps_frame_count / (now - last_fps_time);
             fps_frame_count = 0;
             last_fps_time = now;
             printf("[Stream Active] FPS: %.1f | Frame: %d | Active Tracks: %d\n",
@@ -121,26 +143,24 @@ int main(int argc, char **argv) {
         /* Frame skipping logic */
         if (frame_index % config.camera.process_every_n_frames != 0) {
 #ifdef _WIN32
-            Sleep(30);
+            Sleep(25);
 #else
-            usleep(30000);
+            usleep(25000);
 #endif
             continue;
         }
 
-        /*
-         * Pipeline step 1: Grab Frame from Camera/RTSP
-         * Pipeline step 2: Run Face Detection (SCRFD)
-         * Pipeline step 3: Extract ArcFace Embeddings (112x112 aligned crop)
-         * Pipeline step 4: Cosine Similarity Matching & Top-1/Top-2 Margin Filter
-         * Pipeline step 5: Centroid Tracking & Majority Identity Voting
-         * Pipeline step 6: Virtual Line Crossing & Direction Assessment
-         * Pipeline step 7: SQLite DB Event Insertion & Async Backend Dispatch
-         */
-        
+        /* Grab Video Frame */
+        ImageBuffer frame = {0};
+        if (cap) {
+            video_capture_read_frame(cap, &frame, now);
+        }
+
+        /* Pipeline step 2: Run Face Detection (SCRFD) */
+        double t_infer_start = get_monotonic_time_seconds();
         FaceResult faces[MAX_DETECTED_FACES];
-        ImageBuffer dummy_frame = {0};
-        int num_faces = face_engine_detect(face_engine, &dummy_frame, faces, MAX_DETECTED_FACES);
+        int num_faces = face_engine_detect(face_engine, &frame, faces, MAX_DETECTED_FACES);
+        double inference_ms = (get_monotonic_time_seconds() - t_infer_start) * 1000.0;
 
         for (int i = 0; i < num_faces; i++) {
             FaceResult *face = &faces[i];
@@ -171,7 +191,7 @@ int main(int argc, char **argv) {
                                 tf->confirmed_score = stable_score;
 
                                 /* Determine crossing direction */
-                                float line_y = (float)dummy_frame.height * config.attendance.line_y_ratio;
+                                float line_y = (float)frame.height * config.attendance.line_y_ratio;
                                 int cur_side = (tf->cy >= line_y) ? 1 : -1;
                                 const char *dir = crossing_direction(tf->previous_side, cur_side, config.attendance.inside_is_below_line);
                                 if (!dir) dir = "ENTER";
@@ -187,6 +207,9 @@ int main(int argc, char **argv) {
                                 );
 
                                 if (evt_id > 0) {
+                                    snprintf(last_event_msg, sizeof(last_event_msg),
+                                             "[SUCCESS] %s: %s (Score: %.2f)", dir, stable_id, stable_score);
+
                                     printf("\n[EVENT DETECTED] ID=%lld | Track=%lld | Employee=%s | Score=%.3f | Dir=%s\n",
                                            (long long)evt_id, (long long)track_id, stable_id, stable_score, dir);
 
@@ -212,14 +235,31 @@ int main(int argc, char **argv) {
             }
         }
 
+        /* Render to native Windows GUI Window */
+        if (win) {
+            gui_window_render(
+                win,
+                &frame,
+                faces,
+                num_faces,
+                &tracker,
+                config.attendance.line_y_ratio,
+                (float)current_fps,
+                (float)inference_ms,
+                last_event_msg
+            );
+        }
+
 #ifdef _WIN32
-        Sleep(30);
+        Sleep(25);
 #else
-        usleep(30000);
+        usleep(25000);
 #endif
     }
 
     printf("\n[Shutdown] Cleaning up resources...\n");
+    if (win) gui_window_destroy(win);
+    if (cap) video_capture_close(cap);
     if (dispatcher) backend_dispatcher_destroy(dispatcher);
     face_engine_destroy(face_engine);
     face_matcher_destroy(matcher);
