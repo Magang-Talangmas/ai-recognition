@@ -56,7 +56,10 @@ class ZeroLatencyRTSPCapture:
     def _connect(self):
         try:
             if self.cap is not None:
-                self.cap.release()
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
             
             is_rtsp = isinstance(self.source, str) and self.source.startswith("rtsp")
             backend = self.cv2.CAP_FFMPEG if is_rtsp else self.cv2.CAP_ANY
@@ -65,7 +68,7 @@ class ZeroLatencyRTSPCapture:
             
             if self.cap.isOpened():
                 self.is_connected = True
-                sys.stderr.write(f"[Feeder] Substream connected: {self.source}\n")
+                sys.stderr.write(f"[Feeder] Video source connected: {self.source}\n")
             else:
                 self.is_connected = False
                 sys.stderr.write(f"[Feeder] Warning: Connection failed to {self.source}\n")
@@ -74,18 +77,30 @@ class ZeroLatencyRTSPCapture:
             sys.stderr.write(f"[Feeder] Connection error: {e}\n")
 
     def _capture_loop(self):
+        backoff = 0.5
         while self.running:
             if not self.is_connected or self.cap is None or not self.cap.isOpened():
-                time.sleep(1.0)
+                time.sleep(backoff)
+                backoff = min(backoff * 1.5, 5.0)
                 self._connect()
                 continue
             
-            ret, frame = self.cap.read()
-            if ret and frame is not None:
-                with self.lock:
-                    self.latest_frame = frame
-            else:
-                time.sleep(0.01)
+            # Drain internal buffers with grab() to guarantee zero-latency fresh frames
+            try:
+                grabbed = self.cap.grab()
+                if grabbed:
+                    backoff = 0.5
+                    ret, frame = self.cap.retrieve()
+                    if ret and frame is not None:
+                        with self.lock:
+                            self.latest_frame = frame
+                else:
+                    time.sleep(0.005)
+                    if self.cap is None or not self.cap.isOpened():
+                        self.is_connected = False
+            except Exception:
+                self.is_connected = False
+                time.sleep(0.05)
 
     def read_fresh(self):
         with self.lock:
@@ -96,7 +111,10 @@ class ZeroLatencyRTSPCapture:
     def release(self):
         self.running = False
         if self.cap is not None:
-            self.cap.release()
+            try:
+                self.cap.release()
+            except Exception:
+                pass
 
 class AsyncFaceDetector:
     """Decoupled background face detector to maintain 30+ FPS stream throughput."""
@@ -140,6 +158,7 @@ class AsyncFaceDetector:
 # Global stream buffers and state for Web and Mobile HTTP clients
 latest_jpeg_frame = None
 jpeg_lock = threading.Lock()
+jpeg_cond = threading.Condition(jpeg_lock)
 stream_stats = {
     "fps": 0.0,
     "faces_detected": 0,
@@ -212,7 +231,7 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         global latest_jpeg_frame, stream_stats
 
-        if self.path == "/stream":
+        if self.path.startswith("/stream"):
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -220,21 +239,24 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
             self.send_header("Pragma", "no-cache")
             self.end_headers()
 
+            last_frame_bytes = None
             while True:
-                with jpeg_lock:
+                with jpeg_cond:
+                    if latest_jpeg_frame is last_frame_bytes or latest_jpeg_frame is None:
+                        jpeg_cond.wait(timeout=0.1)
                     frame_bytes = latest_jpeg_frame
 
-                if frame_bytes is not None:
+                if frame_bytes is not None and frame_bytes is not last_frame_bytes:
                     try:
                         self.wfile.write(b"--frame\r\n")
                         self.send_header("Content-Type", "image/jpeg")
-                        self.send_header("Content-Length", len(frame_bytes))
+                        self.send_header("Content-Length", str(len(frame_bytes)))
                         self.end_headers()
                         self.wfile.write(frame_bytes)
                         self.wfile.write(b"\r\n")
-                    except (BrokenPipeError, ConnectionResetError):
+                        last_frame_bytes = frame_bytes
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
                         break
-                time.sleep(0.025)
 
         elif self.path == "/snapshot":
             with jpeg_lock:
@@ -243,7 +265,7 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Content-Type", "image/jpeg")
-                self.send_header("Content-Length", len(frame_bytes))
+                self.send_header("Content-Length", str(len(frame_bytes)))
                 self.end_headers()
                 self.wfile.write(frame_bytes)
             else:
@@ -540,11 +562,12 @@ def main():
         # Encode composite frame to JPEG for HTTP clients (100% pixel-synced with Desktop GUI)
         ret_enc, jpeg_bytes = cv2.imencode(".jpg", frame_to_serve, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if ret_enc:
-            with jpeg_lock:
+            with jpeg_cond:
                 latest_jpeg_frame = jpeg_bytes.tobytes()
+                jpeg_cond.notify_all()
 
-        # Target ~30 FPS throughput
-        time.sleep(0.015)
+        # Brief yield to keep CPU healthy while maintaining high frame rate
+        time.sleep(0.005)
 
     capture.release()
 

@@ -20,14 +20,35 @@ struct FaceEngine {
     bool is_initialized;
 };
 
+bool face_is_valid_embedding(const float *vector, int dim) {
+    if (!vector || dim != FACE_EMBEDDING_DIM) return false;
+    double sum_sq = 0.0;
+    for (int i = 0; i < dim; i++) {
+        float v = vector[i];
+        if (isnan(v) || isinf(v)) return false;
+        sum_sq += (double)v * (double)v;
+    }
+    /* Reject all-zeros or degenerate embeddings */
+    if (sum_sq < 1e-6) return false;
+    return true;
+}
+
 void face_vector_l2_normalize(float *vector, int dim) {
     if (!vector || dim <= 0) return;
     double sum_sq = 0.0;
     for (int i = 0; i < dim; i++) {
-        sum_sq += (double)vector[i] * (double)vector[i];
+        float v = vector[i];
+        if (isnan(v) || isinf(v)) {
+            memset(vector, 0, sizeof(float) * dim);
+            return;
+        }
+        sum_sq += (double)v * (double)v;
     }
     double norm = sqrt(sum_sq);
-    if (norm < 1e-12) norm = 1e-12;
+    if (norm < 1e-12) {
+        memset(vector, 0, sizeof(float) * dim);
+        return;
+    }
     float inv_norm = (float)(1.0 / norm);
     for (int i = 0; i < dim; i++) {
         vector[i] *= inv_norm;
@@ -267,79 +288,16 @@ int face_engine_detect(
     FaceResult *results,
     int max_faces
 ) {
-    if (!engine || !frame || !frame->data || !results || max_faces <= 0) {
-        return 0;
-    }
-
-    int detected_count = 0;
-    int w = frame->width;
-    int h = frame->height;
-    int stride = frame->stride;
-    int ch = frame->channels;
-
-    /* Scan for face/skin clusters in image */
-    int min_x = w, max_x = 0, min_y = h, max_y = 0;
-    int skin_pixels = 0;
-
-    for (int y = 10; y < h - 10; y += 4) {
-        const uint8_t *row = frame->data + y * stride;
-        for (int x = 10; x < w - 10; x += 4) {
-            int r = row[x * ch + 0];
-            int g = row[x * ch + 1];
-            int b = row[x * ch + 2];
-
-            /* Skin tone heuristic check */
-            if (r > 150 && g > 110 && b > 80 && r > g && g > b && (r - g) > 15) {
-                skin_pixels++;
-                if (x < min_x) min_x = x;
-                if (x > max_x) max_x = x;
-                if (y < min_y) min_y = y;
-                if (y > max_y) max_y = y;
-            }
-        }
-    }
-
-    if (skin_pixels > 40 && min_x < max_x && min_y < max_y && detected_count < max_faces) {
-        FaceResult *face = &results[detected_count++];
-        memset(face, 0, sizeof(FaceResult));
-
-        int pad_x = (max_x - min_x) / 6;
-        int pad_y = (max_y - min_y) / 6;
-
-        face->bbox.x1 = (float)fmaxf(0.0f, (float)(min_x - pad_x));
-        face->bbox.y1 = (float)fmaxf(0.0f, (float)(min_y - pad_y));
-        face->bbox.x2 = (float)fminf((float)w, (float)(max_x + pad_x));
-        face->bbox.y2 = (float)fminf((float)h, (float)(max_y + pad_y));
-
-        face->detection_score = 0.92f;
-        face->blur_score = face_engine_calculate_blur_score(frame, &face->bbox);
-        if (face->blur_score < 1.0f) face->blur_score = 75.0f; /* high quality fallback */
-
-        float bw = face->bbox.x2 - face->bbox.x1;
-        float bh = face->bbox.y2 - face->bbox.y1;
-        face->quality_ok = (bw >= 30.0f && bh >= 30.0f);
-
-        /* Set landmarks */
-        face->landmarks.x[0] = face->bbox.x1 + bw * 0.30f; /* Left Eye */
-        face->landmarks.y[0] = face->bbox.y1 + bh * 0.35f;
-        face->landmarks.x[1] = face->bbox.x1 + bw * 0.70f; /* Right Eye */
-        face->landmarks.y[1] = face->bbox.y1 + bh * 0.35f;
-        face->landmarks.x[2] = face->bbox.x1 + bw * 0.50f; /* Nose */
-        face->landmarks.y[2] = face->bbox.y1 + bh * 0.55f;
-        face->landmarks.x[3] = face->bbox.x1 + bw * 0.35f; /* Left Mouth */
-        face->landmarks.y[3] = face->bbox.y1 + bh * 0.75f;
-        face->landmarks.x[4] = face->bbox.x1 + bw * 0.65f; /* Right Mouth */
-        face->landmarks.y[4] = face->bbox.y1 + bh * 0.75f;
-
-        /* Extract ArcFace normalized embedding */
-        for (int d = 0; d < FACE_EMBEDDING_DIM; d++) {
-            face->embedding[d] = sinf((float)d * 0.17f + face->bbox.x1 * 0.05f);
-        }
-        face_vector_l2_normalize(face->embedding, FACE_EMBEDDING_DIM);
-        face->has_embedding = true;
-    }
-
-    return detected_count;
+    (void)engine;
+    (void)frame;
+    (void)results;
+    (void)max_faces;
+    /*
+     * Native C face detection is reserved for direct C ONNX/OpenVINO bindings.
+     * In the OpenVINO feeder pipeline, real detections & embeddings are provided
+     * via the feeder IPC. No fake skin-tone heuristic or fallback faces are returned.
+     */
+    return 0;
 }
 
 int face_engine_extract_embedding(
@@ -347,13 +305,14 @@ int face_engine_extract_embedding(
     const ImageBuffer *aligned_face_112x112,
     float *embedding_out
 ) {
-    if (!engine || !aligned_face_112x112 || !embedding_out) return -1;
-
-    for (int d = 0; d < FACE_EMBEDDING_DIM; d++) {
-        embedding_out[d] = sinf((float)d * 0.17f);
-    }
-    face_vector_l2_normalize(embedding_out, FACE_EMBEDDING_DIM);
-    return 0;
+    (void)engine;
+    (void)aligned_face_112x112;
+    (void)embedding_out;
+    /*
+     * Real embeddings are extracted via OpenVINO in the feeder pipeline.
+     * No synthetic or fake trigonometric embeddings are generated.
+     */
+    return -1;
 }
 
 int face_engine_build_template(

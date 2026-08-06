@@ -46,7 +46,7 @@ endif()
 # System Libraries
 set(EXTRA_LIBS ${SQLITE3_LIBS})
 if (WIN32)
-    list(APPEND EXTRA_LIBS winhttp ws2_32 gdi32 user32)
+    list(APPEND EXTRA_LIBS winhttp ws2_32 gdi32 user32 ole32)
 else()
     list(APPEND EXTRA_LIBS pthread m)
 endif()

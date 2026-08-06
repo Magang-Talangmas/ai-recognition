@@ -28,7 +28,7 @@ static int tests_failed = 0;
 static void test_config(void) {
     printf("\n=== TEST 1: Config & Environment Expansion ===\n");
     AppConfig cfg;
-    config_load(NULL, &cfg);
+    config_load("non_existent_defaults.yaml", &cfg);
 
     ASSERT_TRUE(cfg.camera.process_every_n_frames == 10, "Default process_every_n_frames is 10");
     ASSERT_TRUE(cfg.face.vote_window == 5, "Default vote_window is 5");
@@ -88,6 +88,23 @@ static void test_matcher_and_normalization(void) {
     remove(test_db_file);
 }
 
+static void test_embedding_validation(void) {
+    printf("\n=== TEST 2b: Embedding Validation (Finite & Non-Zero Norm) ===\n");
+
+    float zeros[FACE_EMBEDDING_DIM] = {0};
+    ASSERT_TRUE(!face_is_valid_embedding(zeros, FACE_EMBEDDING_DIM), "All-zero vector rejected as invalid");
+
+    float nan_vec[FACE_EMBEDDING_DIM];
+    for (int i = 0; i < FACE_EMBEDDING_DIM; i++) nan_vec[i] = 1.0f;
+    nan_vec[10] = NAN;
+    ASSERT_TRUE(!face_is_valid_embedding(nan_vec, FACE_EMBEDDING_DIM), "NaN-containing vector rejected");
+
+    float valid_vec[FACE_EMBEDDING_DIM];
+    for (int i = 0; i < FACE_EMBEDDING_DIM; i++) valid_vec[i] = (float)(i + 1);
+    face_vector_l2_normalize(valid_vec, FACE_EMBEDDING_DIM);
+    ASSERT_TRUE(face_is_valid_embedding(valid_vec, FACE_EMBEDDING_DIM), "L2 normalized non-zero vector accepted as valid");
+}
+
 static void test_vision_tracking_and_voting(void) {
     printf("\n=== TEST 3: Centroid Tracking & Majority Voting ===\n");
 
@@ -127,7 +144,7 @@ static void test_vision_tracking_and_voting(void) {
 }
 
 static void test_sqlite_database(void) {
-    printf("\n=== TEST 4: SQLite Database Event Lifecycle ===\n");
+    printf("\n=== TEST 4: SQLite Database Event Lifecycle with UUID v4 ===\n");
 
     const char *test_db_file = "test_attendance.db";
     remove(test_db_file);
@@ -135,6 +152,7 @@ static void test_sqlite_database(void) {
     AttendanceDB *db = attendance_db_open(test_db_file, 5);
     ASSERT_TRUE(db != NULL, "Opened test SQLite database");
 
+    char evt_uuid[64] = {0};
     int64_t ev_id = attendance_db_create_pending_event(
         db,
         "test-cam",
@@ -142,11 +160,15 @@ static void test_sqlite_database(void) {
         "EMP-999",
         "ENTER",
         "PENDING_CONFIRMATION",
-        0.88f
+        0.88f,
+        evt_uuid,
+        sizeof(evt_uuid)
     );
     ASSERT_TRUE(ev_id > 0, "Created PENDING_CONFIRMATION attendance event");
+    ASSERT_TRUE(strlen(evt_uuid) == 36, "Generated valid 36-char UUID v4 for event");
 
     /* Check duplicate suppression */
+    char dup_uuid[64] = {0};
     int64_t dup_id = attendance_db_create_pending_event(
         db,
         "test-cam",
@@ -154,7 +176,9 @@ static void test_sqlite_database(void) {
         "EMP-999",
         "ENTER",
         "PENDING_CONFIRMATION",
-        0.89f
+        0.89f,
+        dup_uuid,
+        sizeof(dup_uuid)
     );
     ASSERT_TRUE(dup_id == -1, "Duplicate event within cooldown properly suppressed");
 
@@ -163,6 +187,7 @@ static void test_sqlite_database(void) {
     int count = attendance_db_list_events(db, events, 10);
     ASSERT_TRUE(count == 1, "Listed 1 event from database");
     ASSERT_TRUE(strcmp(events[0].employee_id, "EMP-999") == 0, "Retrieved employee_id matches");
+    ASSERT_TRUE(strcmp(events[0].event_id, evt_uuid) == 0, "Retrieved event_id matches generated UUID");
     ASSERT_TRUE(strcmp(events[0].status, "PENDING_CONFIRMATION") == 0, "Initial status is PENDING_CONFIRMATION");
 
     /* Respond with confirmation */
@@ -205,6 +230,7 @@ int main(void) {
 
     test_config();
     test_matcher_and_normalization();
+    test_embedding_validation();
     test_vision_tracking_and_voting();
     test_sqlite_database();
     test_json();

@@ -16,6 +16,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <objbase.h>
 #define mkdir_compat(p) _mkdir(p)
 #else
 #include <sys/stat.h>
@@ -30,6 +31,7 @@ struct AttendanceDB {
 static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS attendance_events (\n"
     "    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+    "    event_id TEXT,\n"
     "    camera_id TEXT NOT NULL,\n"
     "    track_id INTEGER NOT NULL,\n"
     "    employee_id TEXT,\n"
@@ -42,6 +44,39 @@ static const char *SCHEMA_SQL =
     "    detected_at TEXT NOT NULL,\n"
     "    responded_at TEXT\n"
     ");\n";
+
+void attendance_generate_uuid_v4(char *out_uuid, size_t max_len) {
+    if (!out_uuid || max_len < 37) return;
+
+#ifdef _WIN32
+    GUID guid;
+    if (SUCCEEDED(CoCreateGuid(&guid))) {
+        snprintf(out_uuid, max_len,
+                 "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                 (unsigned long)guid.Data1,
+                 (unsigned int)guid.Data2,
+                 (unsigned int)guid.Data3,
+                 guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+                 guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+        return;
+    }
+#endif
+
+    /* Portable fallback random UUID v4 */
+    uint8_t bytes[16];
+    for (int i = 0; i < 16; i++) {
+        bytes[i] = (uint8_t)(rand() & 0xFF);
+    }
+    bytes[6] = (bytes[6] & 0x0F) | 0x40; /* Version 4 */
+    bytes[8] = (bytes[8] & 0x3F) | 0x80; /* Variant 1 */
+    snprintf(out_uuid, max_len,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3],
+             bytes[4], bytes[5],
+             bytes[6], bytes[7],
+             bytes[8], bytes[9],
+             bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+}
 
 static void ensure_parent_dir(const char *filepath) {
     char temp[512];
@@ -95,6 +130,9 @@ AttendanceDB *attendance_db_open(const char *db_path, int duplicate_cooldown_sec
         return NULL;
     }
 
+    /* Auto-migrate event_id column if table already exists without it */
+    sqlite3_exec(db_obj->db, "ALTER TABLE attendance_events ADD COLUMN event_id TEXT;", NULL, NULL, NULL);
+
     /* Enable WAL mode for high concurrency */
     sqlite3_exec(db_obj->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
 
@@ -117,7 +155,9 @@ int64_t attendance_db_create_pending_event(
     const char *employee_id,
     const char *direction,
     const char *event_type,
-    float similarity
+    float similarity,
+    char *out_event_id,
+    size_t event_id_len
 ) {
     if (!db || !db->db || !camera_id || !employee_id || !direction || !event_type) {
         return -1;
@@ -148,11 +188,18 @@ int64_t attendance_db_create_pending_event(
     char now_iso[64];
     get_iso8601_timestamp(now_iso, sizeof(now_iso));
 
+    char uuid_v4[64];
+    attendance_generate_uuid_v4(uuid_v4, sizeof(uuid_v4));
+    if (out_event_id && event_id_len > 0) {
+        strncpy(out_event_id, uuid_v4, event_id_len - 1);
+        out_event_id[event_id_len - 1] = '\0';
+    }
+
     const char *INSERT_SQL =
         "INSERT INTO attendance_events ("
-        "    camera_id, track_id, employee_id, original_candidate_id, "
+        "    event_id, camera_id, track_id, employee_id, original_candidate_id, "
         "    direction, event_type, similarity, status, detected_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRMATION', ?);";
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CONFIRMATION', ?);";
 
     rc = sqlite3_prepare_v2(db->db, INSERT_SQL, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
@@ -160,14 +207,15 @@ int64_t attendance_db_create_pending_event(
         return -1;
     }
 
-    sqlite3_bind_text(stmt, 1, camera_id, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 2, track_id);
-    sqlite3_bind_text(stmt, 3, employee_id, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, uuid_v4, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, camera_id, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, track_id);
     sqlite3_bind_text(stmt, 4, employee_id, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 5, direction, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 6, event_type, -1, SQLITE_STATIC);
-    sqlite3_bind_double(stmt, 7, (double)similarity);
-    sqlite3_bind_text(stmt, 8, now_iso, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 5, employee_id, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 6, direction, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 7, event_type, -1, SQLITE_STATIC);
+    sqlite3_bind_double(stmt, 8, (double)similarity);
+    sqlite3_bind_text(stmt, 9, now_iso, -1, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -252,7 +300,7 @@ int attendance_db_list_events(AttendanceDB *db, AttendanceEvent *events, int max
     if (!db || !db->db || !events || max_events <= 0) return 0;
 
     const char *LIST_SQL =
-        "SELECT id, camera_id, track_id, IFNULL(employee_id, ''), "
+        "SELECT id, IFNULL(event_id, ''), camera_id, track_id, IFNULL(employee_id, ''), "
         "       direction, event_type, similarity, status, "
         "       IFNULL(employee_response, ''), detected_at, IFNULL(responded_at, '') "
         "FROM attendance_events ORDER BY id DESC LIMIT ?;";
@@ -270,16 +318,17 @@ int attendance_db_list_events(AttendanceDB *db, AttendanceEvent *events, int max
         memset(ev, 0, sizeof(AttendanceEvent));
 
         ev->id = sqlite3_column_int64(stmt, 0);
-        strncpy(ev->camera_id, (const char *)sqlite3_column_text(stmt, 1), sizeof(ev->camera_id) - 1);
-        ev->track_id = sqlite3_column_int64(stmt, 2);
-        strncpy(ev->employee_id, (const char *)sqlite3_column_text(stmt, 3), sizeof(ev->employee_id) - 1);
-        strncpy(ev->direction, (const char *)sqlite3_column_text(stmt, 4), sizeof(ev->direction) - 1);
-        strncpy(ev->event_type, (const char *)sqlite3_column_text(stmt, 5), sizeof(ev->event_type) - 1);
-        ev->similarity = (float)sqlite3_column_double(stmt, 6);
-        strncpy(ev->status, (const char *)sqlite3_column_text(stmt, 7), sizeof(ev->status) - 1);
-        strncpy(ev->employee_response, (const char *)sqlite3_column_text(stmt, 8), sizeof(ev->employee_response) - 1);
-        strncpy(ev->detected_at, (const char *)sqlite3_column_text(stmt, 9), sizeof(ev->detected_at) - 1);
-        strncpy(ev->responded_at, (const char *)sqlite3_column_text(stmt, 10), sizeof(ev->responded_at) - 1);
+        strncpy(ev->event_id, (const char *)sqlite3_column_text(stmt, 1), sizeof(ev->event_id) - 1);
+        strncpy(ev->camera_id, (const char *)sqlite3_column_text(stmt, 2), sizeof(ev->camera_id) - 1);
+        ev->track_id = sqlite3_column_int64(stmt, 3);
+        strncpy(ev->employee_id, (const char *)sqlite3_column_text(stmt, 4), sizeof(ev->employee_id) - 1);
+        strncpy(ev->direction, (const char *)sqlite3_column_text(stmt, 5), sizeof(ev->direction) - 1);
+        strncpy(ev->event_type, (const char *)sqlite3_column_text(stmt, 6), sizeof(ev->event_type) - 1);
+        ev->similarity = (float)sqlite3_column_double(stmt, 7);
+        strncpy(ev->status, (const char *)sqlite3_column_text(stmt, 8), sizeof(ev->status) - 1);
+        strncpy(ev->employee_response, (const char *)sqlite3_column_text(stmt, 9), sizeof(ev->employee_response) - 1);
+        strncpy(ev->detected_at, (const char *)sqlite3_column_text(stmt, 10), sizeof(ev->detected_at) - 1);
+        strncpy(ev->responded_at, (const char *)sqlite3_column_text(stmt, 11), sizeof(ev->responded_at) - 1);
 
         count++;
     }

@@ -1,4 +1,5 @@
 #include "attendance/api_dispatcher.h"
+#include "attendance/database.h"
 #include "attendance/vision_utils.h"
 #include "third_party/cJSON.h"
 
@@ -286,7 +287,7 @@ bool backend_dispatcher_dispatch_checkin(
     if (event_id && strlen(event_id) > 0) {
         strncpy(task.event_id, event_id, sizeof(task.event_id) - 1);
     } else {
-        snprintf(task.event_id, sizeof(task.event_id), "evt-%lld", (long long)(get_monotonic_time_seconds() * 1000.0));
+        attendance_generate_uuid_v4(task.event_id, sizeof(task.event_id));
     }
 
     if (detected_at && strlen(detected_at) > 0) {

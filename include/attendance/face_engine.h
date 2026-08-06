@@ -88,6 +88,9 @@ int face_engine_build_template(
     int *valid_count_out
 );
 
+/* Validate if embedding is finite, non-zero, and has valid L2 norm */
+bool face_is_valid_embedding(const float *vector, int dim);
+
 /* Utility to normalize a 512-d vector to unit L2 length in-place */
 void face_vector_l2_normalize(float *vector, int dim);
 

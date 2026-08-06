@@ -8,6 +8,10 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "third_party/stb_image.h"
 
+#define CANONICAL_CANVAS_W 1280
+#define CANONICAL_CANVAS_H 720
+#define CANONICAL_PANEL_W  280
+
 #ifdef _WIN32
 #include <windows.h>
 
@@ -110,7 +114,7 @@ static FaceImageCache* get_enrolled_face(const char *name) {
         DeleteDC(hdc_temp);
         ReleaseDC(NULL, hdc_screen);
 
-        stbi_image_free(data); // Free the huge raw data!
+        stbi_image_free(data);
     }
     
     FaceImageCache *cache = &face_cache[num_face_cache++];
@@ -130,10 +134,6 @@ typedef struct {
 #define MAX_PANEL_PERSONS 32
 static PanelPerson panel_persons[MAX_PANEL_PERSONS];
 static int num_panel_persons = 0;
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 struct GuiWindow {
     char title[256];
@@ -159,6 +159,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     switch (msg) {
         case WM_ERASEBKGND:
             return 1; /* Avoid flicker during resize/fullscreen */
+        case WM_GETMINMAXINFO: {
+            LPMINMAXINFO lpMMI = (LPMINMAXINFO)lParam;
+            lpMMI->ptMinTrackSize.x = 640;
+            lpMMI->ptMinTrackSize.y = 360;
+            return 0;
+        }
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
@@ -199,9 +205,9 @@ GuiWindow *gui_window_create(const char *title, int width, int height) {
     GuiWindow *win = (GuiWindow *)calloc(1, sizeof(GuiWindow));
     if (!win) return NULL;
 
-    strncpy(win->title, title ? title : "Talangmas AI Surveillance", sizeof(win->title) - 1);
-    win->width = (width > 0) ? width : 1280;
-    win->height = (height > 0) ? height : 720;
+    strncpy(win->title, title ? title : "Talangmas AI Attendance - Live View", sizeof(win->title) - 1);
+    win->width = (width > 0) ? width : CANONICAL_CANVAS_W;
+    win->height = (height > 0) ? height : CANONICAL_CANVAS_H;
 
 #ifdef _WIN32
     HINSTANCE hInst = GetModuleHandle(NULL);
@@ -233,9 +239,10 @@ GuiWindow *gui_window_create(const char *title, int width, int height) {
         return NULL;
     }
 
+    /* Fixed canonical canvas size (1280x720) for consistent rendering & web stream */
     HDC hdc_screen = GetDC(win->hwnd);
     win->hdc_mem = CreateCompatibleDC(hdc_screen);
-    win->hbm_mem = CreateCompatibleBitmap(hdc_screen, win->width, win->height);
+    win->hbm_mem = CreateCompatibleBitmap(hdc_screen, CANONICAL_CANVAS_W, CANONICAL_CANVAS_H);
     win->hbm_old = (HBITMAP)SelectObject(win->hdc_mem, win->hbm_mem);
     ReleaseDC(win->hwnd, hdc_screen);
 
@@ -350,40 +357,47 @@ void gui_window_render(
 #ifdef _WIN32
     if (!win->hwnd || !win->hdc_mem) return;
 
-    /* Get dynamic current window client area */
-    RECT client_rc;
-    GetClientRect(win->hwnd, &client_rc);
-    int w = client_rc.right - client_rc.left;
-    int h = client_rc.bottom - client_rc.top;
-    if (w <= 0 || h <= 0) return;
-
-    /* Resize offscreen buffer if window size changed (fullscreen / maximize) */
-    if (w != win->width || h != win->height || !win->hbm_mem) {
-        win->width = w;
-        win->height = h;
-        if (win->hbm_mem) {
-            SelectObject(win->hdc_mem, win->hbm_old);
-            DeleteObject(win->hbm_mem);
-        }
-        HDC hdc_screen = GetDC(win->hwnd);
-        win->hbm_mem = CreateCompatibleBitmap(hdc_screen, w, h);
-        win->hbm_old = (HBITMAP)SelectObject(win->hdc_mem, win->hbm_mem);
-        ReleaseDC(win->hwnd, hdc_screen);
-    }
-
     HDC hdc = win->hdc_mem;
+    int can_w = CANONICAL_CANVAS_W;
+    int can_h = CANONICAL_CANVAS_H;
+    int panel_w = CANONICAL_PANEL_W;
+    int cam_viewport_w = can_w - panel_w; /* 1000px viewport */
+    int cam_viewport_h = can_h;           /* 720px viewport */
 
-    /* Define Side Panel Width */
-    int panel_w = 260;
-    int cam_w = (w > panel_w + 320) ? (w - panel_w) : w;
-    bool has_panel = (cam_w != w);
+    /* 1. Paint Camera Viewport Background */
+    RECT cam_vp_rect = {0, 0, cam_viewport_w, cam_viewport_h};
+    HBRUSH cam_bg_brush = CreateSolidBrush(RGB(15, 18, 24));
+    FillRect(hdc, &cam_vp_rect, cam_bg_brush);
+    DeleteObject(cam_bg_brush);
 
-    /* Coordinate scaling factors from source frame resolution to current display window */
+    /* 1.1 Calculate Aspect-Ratio-Preserving Coordinates for Camera Frame */
+    int cam_draw_w = cam_viewport_w;
+    int cam_draw_h = cam_viewport_h;
+    int cam_offset_x = 0;
+    int cam_offset_y = 0;
     float scale_x = 1.0f;
     float scale_y = 1.0f;
 
-    BITMAPINFO bmi;
     if (frame && frame->data && frame->width > 0 && frame->height > 0) {
+        float aspect_src = (float)frame->width / (float)frame->height;
+        float aspect_dst = (float)cam_viewport_w / (float)cam_viewport_h;
+
+        if (aspect_src > aspect_dst) {
+            cam_draw_w = cam_viewport_w;
+            cam_draw_h = (int)((float)cam_viewport_w / aspect_src);
+            cam_offset_x = 0;
+            cam_offset_y = (cam_viewport_h - cam_draw_h) / 2;
+        } else {
+            cam_draw_h = cam_viewport_h;
+            cam_draw_w = (int)((float)cam_viewport_h * aspect_src);
+            cam_offset_x = (cam_viewport_w - cam_draw_w) / 2;
+            cam_offset_y = 0;
+        }
+
+        scale_x = (float)cam_draw_w / (float)frame->width;
+        scale_y = (float)cam_draw_h / (float)frame->height;
+
+        BITMAPINFO bmi;
         memset(&bmi, 0, sizeof(bmi));
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bmi.bmiHeader.biWidth = frame->width;
@@ -391,64 +405,58 @@ void gui_window_render(
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 24;
         bmi.bmiHeader.biCompression = BI_RGB;
-    }
-
-    /* 1. Paint Raw Camera Video Buffer Scaled to Camera Window */
-    if (frame && frame->data && frame->width > 0 && frame->height > 0) {
-        scale_x = (float)cam_w / (float)frame->width;
-        scale_y = (float)h / (float)frame->height;
 
         SetStretchBltMode(hdc, HALFTONE);
         SetBrushOrgEx(hdc, 0, 0, NULL);
         StretchDIBits(
             hdc,
-            0, 0, cam_w, h,
+            cam_offset_x, cam_offset_y, cam_draw_w, cam_draw_h,
             0, 0, frame->width, frame->height,
             frame->data,
             &bmi,
             DIB_RGB_COLORS,
             SRCCOPY
         );
-    } else {
-        HBRUSH bg_brush = CreateSolidBrush(RGB(18, 20, 24));
-        RECT r = {0, 0, cam_w, h};
-        FillRect(hdc, &r, bg_brush);
-        DeleteObject(bg_brush);
     }
 
     /* 1.5. Paint Side Panel Background */
-    if (has_panel) {
-        HBRUSH panel_bg = CreateSolidBrush(RGB(22, 26, 33));
-        RECT r_panel = {cam_w, 0, w, h};
-        FillRect(hdc, &r_panel, panel_bg);
-        DeleteObject(panel_bg);
+    HBRUSH panel_bg = CreateSolidBrush(RGB(22, 26, 33));
+    RECT r_panel = {cam_viewport_w, 0, can_w, can_h};
+    FillRect(hdc, &r_panel, panel_bg);
+    DeleteObject(panel_bg);
 
-        /* Panel Title */
-        SetBkMode(hdc, TRANSPARENT);
-        SelectObject(hdc, win->font_title);
-        SetTextColor(hdc, RGB(255, 255, 255));
-        TextOutA(hdc, cam_w + 16, 16, "Detected Persons", 16);
-    }
+    /* Panel Separator Line */
+    HPEN sep_pen = CreatePen(PS_SOLID, 1, RGB(35, 42, 54));
+    HPEN old_pen_sep = (HPEN)SelectObject(hdc, sep_pen);
+    MoveToEx(hdc, cam_viewport_w, 0, NULL);
+    LineTo(hdc, cam_viewport_w, can_h);
+    SelectObject(hdc, old_pen_sep);
+    DeleteObject(sep_pen);
+
+    /* Panel Title */
+    SetBkMode(hdc, TRANSPARENT);
+    SelectObject(hdc, win->font_title);
+    SetTextColor(hdc, RGB(255, 255, 255));
+    TextOutA(hdc, cam_viewport_w + 16, 16, "Detected Persons", 16);
 
     SetBkMode(hdc, TRANSPARENT);
     HFONT old_font = (HFONT)SelectObject(hdc, win->font_regular);
 
-    /* 2. Render Detected Faces & Person Names (Scaled to Full Window) */
-    int panel_cursor_y = 50; /* Start Y position for items in the side panel */
+    /* 2. Render Detected Faces & Person Names (Scaled to Camera Viewport) */
+    int panel_cursor_y = 56;
 
     if (faces && num_faces > 0) {
         for (int i = 0; i < num_faces; i++) {
             const FaceResult *face = &faces[i];
-            int bx1 = (int)(face->bbox.x1 * scale_x);
-            int by1 = (int)(face->bbox.y1 * scale_y);
-            int bx2 = (int)(face->bbox.x2 * scale_x);
-            int by2 = (int)(face->bbox.y2 * scale_y);
+            int bx1 = cam_offset_x + (int)(face->bbox.x1 * scale_x);
+            int by1 = cam_offset_y + (int)(face->bbox.y1 * scale_y);
+            int bx2 = cam_offset_x + (int)(face->bbox.x2 * scale_x);
+            int by2 = cam_offset_y + (int)(face->bbox.y2 * scale_y);
 
             if (bx2 <= bx1 || by2 <= by1) continue;
 
             bool is_match = face->is_recognized && (face->matched_name[0] != '\0');
             COLORREF box_color = is_match ? RGB(0, 255, 128) : RGB(0, 215, 255);
-            COLORREF badge_bg = is_match ? RGB(10, 30, 20) : RGB(15, 22, 32);
 
             if (is_match) {
                 ULONGLONG current_tick = GetTickCount64();
@@ -503,8 +511,8 @@ void gui_window_render(
             HPEN lm_pen = CreatePen(PS_SOLID, 1, RGB(255, 220, 60));
             old_pen = (HPEN)SelectObject(hdc, lm_pen);
             for (int k = 0; k < 5; k++) {
-                int lx = (int)(face->landmarks.x[k] * scale_x);
-                int ly = (int)(face->landmarks.y[k] * scale_y);
+                int lx = cam_offset_x + (int)(face->landmarks.x[k] * scale_x);
+                int ly = cam_offset_y + (int)(face->landmarks.y[k] * scale_y);
                 if (lx >= bx1 && lx <= bx2 && ly >= by1 && ly <= by2) {
                     MoveToEx(hdc, lx - 3, ly, NULL); LineTo(hdc, lx + 4, ly);
                     MoveToEx(hdc, lx, ly - 3, NULL); LineTo(hdc, lx, ly + 4);
@@ -512,82 +520,80 @@ void gui_window_render(
             }
             SelectObject(hdc, old_pen);
             DeleteObject(lm_pen);
-
         }
     }
 
-    /* 2.5 Draw on Side Panel using panel_persons state (10s freeze) */
-    if (has_panel) {
-        ULONGLONG current_tick = GetTickCount64();
-        for (int p = 0; p < num_panel_persons; p++) {
-            if (current_tick - panel_persons[p].last_seen_tick > 10000) {
-                // Remove expired person by shifting array left
-                for (int j = p; j < num_panel_persons - 1; j++) {
-                    panel_persons[j] = panel_persons[j+1];
-                }
-                num_panel_persons--;
-                p--; // re-check this index
-                continue;
+    /* 2.5 Draw on Side Panel using panel_persons state (10s retention) */
+    ULONGLONG current_tick = GetTickCount64();
+    for (int p = 0; p < num_panel_persons; p++) {
+        if (current_tick - panel_persons[p].last_seen_tick > 10000) {
+            for (int j = p; j < num_panel_persons - 1; j++) {
+                panel_persons[j] = panel_persons[j+1];
             }
+            num_panel_persons--;
+            p--;
+            continue;
+        }
 
-            if (panel_cursor_y + 100 >= h) break; // Out of space
+        if (panel_cursor_y + 90 >= can_h) break;
 
-            int px = cam_w + 16;
-            int py = panel_cursor_y;
-            int pw = 80;
-            int ph = 80;
-            COLORREF badge_bg = RGB(10, 30, 20);
-            COLORREF box_color = RGB(0, 255, 128);
+        int px = cam_viewport_w + 16;
+        int py = panel_cursor_y;
+        int pw = 70;
+        int ph = 70;
+        COLORREF badge_bg = RGB(10, 30, 20);
+        COLORREF box_color = RGB(0, 255, 128);
 
-            char disp_name[128];
-            format_person_name(panel_persons[p].matched_name, disp_name, sizeof(disp_name));
+        char disp_name[128];
+        format_person_name(panel_persons[p].matched_name, disp_name, sizeof(disp_name));
 
-            FaceImageCache *cache = get_enrolled_face(panel_persons[p].matched_name);
+        FaceImageCache *cache = get_enrolled_face(panel_persons[p].matched_name);
 
-            /* Draw background for crop */
-            RECT crop_bg_r = {px - 2, py - 2, px + pw + 2, py + ph + 2};
-            HBRUSH crop_b = CreateSolidBrush(badge_bg);
-            FillRect(hdc, &crop_bg_r, crop_b);
-            DeleteObject(crop_b);
+        /* Draw background for crop */
+        RECT crop_bg_r = {px - 2, py - 2, px + pw + 2, py + ph + 2};
+        HBRUSH crop_b = CreateSolidBrush(badge_bg);
+        FillRect(hdc, &crop_bg_r, crop_b);
+        DeleteObject(crop_b);
 
-            if (cache && cache->hbm_crop) {
-                HDC hdc_face = CreateCompatibleDC(hdc);
-                HBITMAP old_bm = (HBITMAP)SelectObject(hdc_face, cache->hbm_crop);
-                BitBlt(hdc, px, py, pw, ph, hdc_face, 0, 0, SRCCOPY);
-                SelectObject(hdc_face, old_bm);
-                DeleteDC(hdc_face);
-            } else {
-                SelectObject(hdc, win->font_regular);
-                SetTextColor(hdc, RGB(100, 100, 100));
-                TextOutA(hdc, px + 20, py + 30, "No Pic", 6);
-            }
-
-            /* Draw border for crop */
-            HPEN crop_pen = CreatePen(PS_SOLID, 1, box_color);
-            HPEN old_pen = (HPEN)SelectObject(hdc, crop_pen);
-            HBRUSH null_brush = (HBRUSH)GetStockObject(NULL_BRUSH);
-            HBRUSH old_brush = (HBRUSH)SelectObject(hdc, null_brush);
-            Rectangle(hdc, px, py, px + pw, py + ph);
-            SelectObject(hdc, old_brush);
-            SelectObject(hdc, old_pen);
-            DeleteObject(crop_pen);
-
-            /* Render name next to the crop */
+        if (cache && cache->hbm_crop) {
+            HDC hdc_face = CreateCompatibleDC(hdc);
+            HBITMAP old_bm = (HBITMAP)SelectObject(hdc_face, cache->hbm_crop);
+            SetStretchBltMode(hdc, HALFTONE);
+            SetBrushOrgEx(hdc, 0, 0, NULL);
+            StretchBlt(hdc, px, py, pw, ph, hdc_face, 0, 0, 80, 80, SRCCOPY);
+            SelectObject(hdc_face, old_bm);
+            DeleteDC(hdc_face);
+        } else {
             SelectObject(hdc, win->font_regular);
-            SetTextColor(hdc, RGB(0, 255, 128));
-            TextOutA(hdc, px + pw + 10, py + 10, disp_name, (int)strlen(disp_name));
-            
-            SelectObject(hdc, win->font_small);
-            SetTextColor(hdc, RGB(150, 150, 150));
-            char acc_str[32];
-            snprintf(acc_str, sizeof(acc_str), "Score: %.2f", panel_persons[p].max_score);
-            TextOutA(hdc, px + pw + 10, py + 30, acc_str, (int)strlen(acc_str));
-
-            panel_cursor_y += ph + 16;
+            SetTextColor(hdc, RGB(100, 100, 100));
+            TextOutA(hdc, px + 15, py + 25, "No Pic", 6);
         }
+
+        /* Draw border for crop */
+        HPEN crop_pen = CreatePen(PS_SOLID, 1, box_color);
+        HPEN old_pen = (HPEN)SelectObject(hdc, crop_pen);
+        HBRUSH null_brush = (HBRUSH)GetStockObject(NULL_BRUSH);
+        HBRUSH old_brush = (HBRUSH)SelectObject(hdc, null_brush);
+        Rectangle(hdc, px, py, px + pw, py + ph);
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        DeleteObject(crop_pen);
+
+        /* Render name next to the crop */
+        SelectObject(hdc, win->font_regular);
+        SetTextColor(hdc, RGB(0, 255, 128));
+        TextOutA(hdc, px + pw + 10, py + 8, disp_name, (int)strlen(disp_name));
+        
+        SelectObject(hdc, win->font_small);
+        SetTextColor(hdc, RGB(150, 150, 150));
+        char acc_str[32];
+        snprintf(acc_str, sizeof(acc_str), "Score: %.2f", panel_persons[p].max_score);
+        TextOutA(hdc, px + pw + 10, py + 28, acc_str, (int)strlen(acc_str));
+
+        panel_cursor_y += ph + 14;
     }
 
-    /* 3. Sleek Minimal HUD Card (ONLY FPS and Inference Time) */
+    /* 3. Sleek Minimal HUD Card (FPS & Inference Time) */
     RECT hud_rect = {16, 16, 195, 72};
     HBRUSH hud_brush = CreateSolidBrush(RGB(15, 18, 24));
     FillRect(hdc, &hud_rect, hud_brush);
@@ -617,33 +623,76 @@ void gui_window_render(
 
     SelectObject(hdc, old_font);
 
-    /* Flush double buffer to screen */
-    HDC hdc_screen = GetDC(win->hwnd);
-    BitBlt(hdc_screen, 0, 0, w, h, win->hdc_mem, 0, 0, SRCCOPY);
-    ReleaseDC(win->hwnd, hdc_screen);
-
-    /* Export rendered offscreen buffer to Shared Memory for Web/Mobile Live Stream */
-    if (win->shm_ptr && w > 0 && h > 0) {
+    /* 4. Export Fixed Canonical 1280x720 Frame to Shared Memory for Web & Mobile */
+    if (win->shm_ptr) {
         BITMAPINFO shm_bmi;
         memset(&shm_bmi, 0, sizeof(shm_bmi));
         shm_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        shm_bmi.bmiHeader.biWidth = w;
-        shm_bmi.bmiHeader.biHeight = -h; /* Top-down BGR */
+        shm_bmi.bmiHeader.biWidth = CANONICAL_CANVAS_W;
+        shm_bmi.bmiHeader.biHeight = -CANONICAL_CANVAS_H; /* Top-down BGR */
         shm_bmi.bmiHeader.biPlanes = 1;
         shm_bmi.bmiHeader.biBitCount = 24;
         shm_bmi.bmiHeader.biCompression = BI_RGB;
 
         uint8_t *pixels = win->shm_ptr + 24; /* 24 bytes header offset */
-        GetDIBits(win->hdc_mem, win->hbm_mem, 0, h, pixels, &shm_bmi, DIB_RGB_COLORS);
+        GetDIBits(win->hdc_mem, win->hbm_mem, 0, CANONICAL_CANVAS_H, pixels, &shm_bmi, DIB_RGB_COLORS);
 
         /* Write 24-byte header: uint32 magic (TMAS), uint32 width, uint32 height, uint32 channels, uint64 seq */
         uint32_t *hdr32 = (uint32_t *)win->shm_ptr;
         uint64_t *hdr64 = (uint64_t *)(win->shm_ptr + 16);
-        hdr32[1] = (uint32_t)w;
-        hdr32[2] = (uint32_t)h;
+        hdr32[1] = (uint32_t)CANONICAL_CANVAS_W;
+        hdr32[2] = (uint32_t)CANONICAL_CANVAS_H;
         hdr32[3] = 3;
         (*hdr64)++;
         hdr32[0] = 0x53414D54; /* 'TMAS' magic */
+    }
+
+    /* 5. Letterbox / Pillarbox Scale to Desktop Window Client Area */
+    RECT client_rc;
+    GetClientRect(win->hwnd, &client_rc);
+    int win_w = client_rc.right - client_rc.left;
+    int win_h = client_rc.bottom - client_rc.top;
+
+    if (win_w > 0 && win_h > 0) {
+        float scale_fit = ((float)win_w / (float)CANONICAL_CANVAS_W < (float)win_h / (float)CANONICAL_CANVAS_H) ?
+                          ((float)win_w / (float)CANONICAL_CANVAS_W) :
+                          ((float)win_h / (float)CANONICAL_CANVAS_H);
+
+        int dest_w = (int)(CANONICAL_CANVAS_W * scale_fit);
+        int dest_h = (int)(CANONICAL_CANVAS_H * scale_fit);
+        int dest_x = (win_w - dest_w) / 2;
+        int dest_y = (win_h - dest_h) / 2;
+
+        HDC hdc_screen = GetDC(win->hwnd);
+
+        /* Clear black letterbox bars if needed */
+        if (dest_x > 0 || dest_y > 0) {
+            HBRUSH black_br = (HBRUSH)GetStockObject(BLACK_BRUSH);
+            if (dest_x > 0) {
+                RECT r_left = {0, 0, dest_x, win_h};
+                RECT r_right = {dest_x + dest_w, 0, win_w, win_h};
+                FillRect(hdc_screen, &r_left, black_br);
+                FillRect(hdc_screen, &r_right, black_br);
+            }
+            if (dest_y > 0) {
+                RECT r_top = {0, 0, win_w, dest_y};
+                RECT r_bot = {0, dest_y + dest_h, win_w, win_h};
+                FillRect(hdc_screen, &r_top, black_br);
+                FillRect(hdc_screen, &r_bot, black_br);
+            }
+        }
+
+        SetStretchBltMode(hdc_screen, HALFTONE);
+        SetBrushOrgEx(hdc_screen, 0, 0, NULL);
+        StretchBlt(
+            hdc_screen,
+            dest_x, dest_y, dest_w, dest_h,
+            win->hdc_mem,
+            0, 0, CANONICAL_CANVAS_W, CANONICAL_CANVAS_H,
+            SRCCOPY
+        );
+
+        ReleaseDC(win->hwnd, hdc_screen);
     }
 
 #endif

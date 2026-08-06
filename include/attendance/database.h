@@ -10,6 +10,7 @@ extern "C" {
 
 typedef struct {
     int64_t id;
+    char event_id[64];  /* UUID v4 string */
     char camera_id[128];
     int64_t track_id;
     char employee_id[128];
@@ -25,13 +26,16 @@ typedef struct {
 
 typedef struct AttendanceDB AttendanceDB;
 
+/* Generate a compliant UUID v4 string (36 chars + null terminator) */
+void attendance_generate_uuid_v4(char *out_uuid, size_t max_len);
+
 /* Initialize SQLite database connection and create schema if not exists */
 AttendanceDB *attendance_db_open(const char *db_path, int duplicate_cooldown_seconds);
 
 /* Close database connection */
 void attendance_db_close(AttendanceDB *db);
 
-/* Create a new PENDING_CONFIRMATION event. Returns event id, or -1 if cooldown suppressed or error. */
+/* Create a new PENDING_CONFIRMATION event with generated UUID. Returns row id, or -1 if cooldown suppressed or error. */
 int64_t attendance_db_create_pending_event(
     AttendanceDB *db,
     const char *camera_id,
@@ -39,7 +43,9 @@ int64_t attendance_db_create_pending_event(
     const char *employee_id,
     const char *direction,
     const char *event_type,
-    float similarity
+    float similarity,
+    char *out_event_id,
+    size_t event_id_len
 );
 
 /* Respond to an event (confirm, reject, break, temporary_exit, checkout, return_break, return_temporary) */
