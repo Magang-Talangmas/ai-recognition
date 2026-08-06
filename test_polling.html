@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTTP Polling Test</title>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: sans-serif; padding: 2rem; }
+        #status { font-weight: bold; margin-bottom: 1rem; }
+        .connected { color: #22c55e; }
+        .disconnected { color: #ef4444; }
+        pre { background-color: #1e293b; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>HTTP Polling Detection Stream</h1>
+    <div id="status" class="disconnected">Waiting for initial fetch...</div>
+    <pre id="output">Loading data...</pre>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const outputEl = document.getElementById('output');
+        
+        // Poll the HTTP server
+        setInterval(() => {
+            fetch('http://192.168.77.171:8088/detect')
+                .then(res => {
+                    if (res.ok) return res.json();
+                    throw new Error("HTTP " + res.status);
+                })
+                .then(data => {
+                    statusEl.textContent = 'Polling OK (http://192.168.77.171:8088/detect)';
+                    statusEl.className = 'connected';
+                    outputEl.textContent = JSON.stringify(data, null, 2);
+                })
+                .catch(err => {
+                    console.error('Polling Error', err);
+                    statusEl.textContent = 'Polling Error: Is rtsp_feeder.py running?';
+                    statusEl.className = 'disconnected';
+                });
+        }, 1000);
+    </script>
+</body>
+</html>

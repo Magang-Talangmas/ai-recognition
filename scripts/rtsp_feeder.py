@@ -280,6 +280,51 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(stream_stats).encode("utf-8"))
 
+        elif self.path == "/detect":
+            import json
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            detect_data = {
+                "active_names": stream_stats.get("active_names", []),
+                "details": stream_stats.get("detect_details", [])
+            }
+            self.wfile.write(json.dumps(detect_data).encode("utf-8"))
+
+        elif self.path == "/detect-ui":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Live Detection Data</title>
+    <style>
+        body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
+        pre { white-space: pre-wrap; word-wrap: break-word; }
+    </style>
+</head>
+<body>
+    <pre id="json-view">Loading...</pre>
+    <script>
+        function fetchData() {
+            fetch('/detect')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('json-view').innerText = JSON.stringify(data, null, 2);
+                })
+                .catch(err => {
+                    document.getElementById('json-view').innerText = 'Error fetching data: ' + err;
+                });
+        }
+        fetchData();
+        setInterval(fetchData, 1000);
+    </script>
+</body>
+</html>"""
+            self.wfile.write(html.encode("utf-8"))
+
         else:
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
@@ -335,6 +380,7 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
             display: flex;
             justify-content: center;
             align-items: center;
+            position: relative;
         }}
         img {{ width: 100%; height: auto; display: block; }}
         .footer {{
@@ -346,6 +392,17 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
             color: #64748b;
             background: #0f172a;
             border-top: 1px solid #1e293b;
+        }}
+        .overlay {{
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 10px;
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+            z-index: 10;
         }}
     </style>
 </head>
@@ -360,12 +417,33 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
         </div>
         <div class="video-container">
             <img src="/stream" alt="Live AI Camera Feed" />
+            <div id="detection-overlay" class="overlay">
+                <div>FPS: <span id="fps">0.0</span></div>
+                <div>Detected: <span id="active-names">None</span></div>
+            </div>
         </div>
         <div class="footer">
             <span>Unified Live Feed &bull; Port {stream_stats.get('port', 8088)}</span>
             <span>Talangmas AI Surveillance Gateway</span>
         </div>
     </div>
+    <script>
+        // Auto update every 2 seconds to fetch detection data
+        setInterval(() => {{
+            fetch('http://192.168.77.171:8088/detect')
+                .then(res => res.json())
+                .then(data => {{
+                    document.getElementById('fps').innerText = data.fps || 0;
+                    if (data.active_names && data.active_names.length > 0) {{
+                        document.getElementById('active-names').innerText = data.active_names.join(', ');
+                    }} else {{
+                        document.getElementById('active-names').innerText = 'None';
+                    }}
+                    console.log("Detection data updated:", data);
+                }})
+                .catch(err => console.error('Error fetching /detect:', err));
+        }}, 2000);
+    </script>
 </body>
 </html>"""
             self.wfile.write(html.encode("utf-8"))
@@ -389,55 +467,77 @@ def main():
         sys.stderr.write("[Feeder] Error: cv2 not found.\n")
         sys.exit(1)
 
-    # Initialize Face Engine (MTCNN + OpenVINO FP16)
+    # Initialize Face Engine (InsightFace buffalo_l ONNX)
     face_engine = None
     try:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if base_dir not in sys.path:
             sys.path.insert(0, base_dir)
 
-        from src.openvino_mtcnn import OpenVINOMTCNN
-        from src.openvino_face_engine import OpenVINOFaceEngine, FaceMatcher
+        from insightface.app import FaceAnalysis
 
-        class StandaloneOpenVINOEngine:
+        class StandaloneInsightFaceEngine:
             def __init__(self, device="CPU"):
-                self.detector = OpenVINOMTCNN(device=device)
-                self.feature_engine = OpenVINOFaceEngine(device=device)
-                npz_db = os.path.join(base_dir, "data", "face_embeddings_openvino.npz")
-                self.matcher = FaceMatcher(db_path=npz_db if os.path.exists(npz_db) else None, similarity_threshold=0.35)
+                self.app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+                self.app.prepare(ctx_id=0, det_size=(640, 640))
+                
+                # Load embeddings.bin for matching
+                self.emp_ids = []
+                self.templates = []
+                bin_path = os.path.join(base_dir, "data", "embeddings.bin")
+                if os.path.exists(bin_path):
+                    with open(bin_path, "rb") as f:
+                        magic = f.read(8)
+                        if magic == b"FACES1\x00\x00":
+                            num_faces, dim = struct.unpack("<ii", f.read(8))
+                            for _ in range(num_faces):
+                                name_bytes = f.read(128)
+                                name = name_bytes.rstrip(b'\x00').decode('utf-8', errors='ignore')
+                                vec = np.frombuffer(f.read(dim * 4), dtype=np.float32)
+                                self.emp_ids.append(name)
+                                self.templates.append(vec)
+                    sys.stderr.write(f"[Feeder] Loaded {len(self.emp_ids)} faces for /detect API.\n")
+
+            def match(self, emb, threshold=0.45):
+                if not self.templates or emb is None:
+                    return "", None, 0.0, False
+                scores = np.dot(self.templates, emb)
+                best_idx = np.argmax(scores)
+                if scores[best_idx] > threshold:
+                    return self.emp_ids[best_idx], self.emp_ids[best_idx], float(scores[best_idx]), True
+                return "", None, float(scores[best_idx]), False
 
             def detect(self, frame):
-                boxes, landmarks = self.detector.detect(frame)
-                if len(boxes) == 0:
+                faces = self.app.get(frame)
+                if not faces or len(faces) == 0:
                     return []
 
                 results = []
-                for i in range(len(boxes)):
-                    box = boxes[i]
-                    lm = landmarks[i]
-                    aligned = self.detector.align_face(frame, lm, target_size=(160, 160))
-                    emb = self.feature_engine.extract_embedding(aligned)
-
-                    pid, name, sim, is_match = self.matcher.match(emb)
-
+                for face in faces:
                     class FaceObj:
                         pass
                     f = FaceObj()
-                    f.bbox = box[:4]
-                    f.detection_score = float(box[4])
+                    f.bbox = face.bbox
+                    f.detection_score = float(face.det_score)
                     f.blur_score = 50.0
-                    f.landmarks = lm
-                    f.embedding = emb
+                    f.landmarks = face.landmark_2d_106
+                    if hasattr(face, 'kps') and face.kps is not None:
+                        f.landmarks = face.kps
+                    f.embedding = face.embedding
+                    
+                    pid, name, sim, is_match = self.match(f.embedding)
+                    
                     f.person_id = pid
-                    f.person_name = name if is_match else None
+                    f.person_name = name
                     f.similarity = sim
                     results.append(f)
                 return results
 
-        face_engine = StandaloneOpenVINOEngine(device="CPU")
-        sys.stderr.write("[Feeder] Standalone OpenVINO MTCNN + FaceEngine FP16 initialized successfully.\n")
+        face_engine = StandaloneInsightFaceEngine(device="CPU")
+        sys.stderr.write("[Feeder] Standalone InsightFace Engine initialized successfully.\n")
     except Exception as e:
         sys.stderr.write(f"[Feeder] FaceEngine error: {e}\n")
+
 
     # Start HTTP Streaming Server for Frontend & Mobile
     try:
@@ -492,6 +592,13 @@ def main():
             stream_stats["faces_detected"] = num_faces
             stream_stats["active_names"] = [
                 getattr(f, 'person_name', 'Unknown') for f in faces if getattr(f, 'person_name', None)
+            ]
+            stream_stats["detect_details"] = [
+                {
+                    "name": getattr(f, 'person_name', 'Unknown'),
+                    "similarity": getattr(f, 'similarity', 0.0),
+                    "bbox": [int(b) for b in getattr(f, 'bbox', [0,0,0,0])]
+                } for f in faces if getattr(f, 'person_name', None)
             ]
         
         # Write binary stream to C engine if pipe is attached

@@ -361,7 +361,7 @@ void gui_window_render(
     int can_w = CANONICAL_CANVAS_W;
     int can_h = CANONICAL_CANVAS_H;
     int panel_w = CANONICAL_PANEL_W;
-    int cam_viewport_w = can_w - panel_w; /* 1000px viewport */
+    int cam_viewport_w = can_w; /* 1280px viewport (FULLSCREEN) */
     int cam_viewport_h = can_h;           /* 720px viewport */
 
     /* 1. Paint Camera Viewport Background */
@@ -418,26 +418,6 @@ void gui_window_render(
             SRCCOPY
         );
     }
-
-    /* 1.5. Paint Side Panel Background */
-    HBRUSH panel_bg = CreateSolidBrush(RGB(22, 26, 33));
-    RECT r_panel = {cam_viewport_w, 0, can_w, can_h};
-    FillRect(hdc, &r_panel, panel_bg);
-    DeleteObject(panel_bg);
-
-    /* Panel Separator Line */
-    HPEN sep_pen = CreatePen(PS_SOLID, 1, RGB(35, 42, 54));
-    HPEN old_pen_sep = (HPEN)SelectObject(hdc, sep_pen);
-    MoveToEx(hdc, cam_viewport_w, 0, NULL);
-    LineTo(hdc, cam_viewport_w, can_h);
-    SelectObject(hdc, old_pen_sep);
-    DeleteObject(sep_pen);
-
-    /* Panel Title */
-    SetBkMode(hdc, TRANSPARENT);
-    SelectObject(hdc, win->font_title);
-    SetTextColor(hdc, RGB(255, 255, 255));
-    TextOutA(hdc, cam_viewport_w + 16, 16, "Detected Persons", 16);
 
     SetBkMode(hdc, TRANSPARENT);
     HFONT old_font = (HFONT)SelectObject(hdc, win->font_regular);
@@ -506,120 +486,8 @@ void gui_window_render(
             SelectObject(hdc, old_pen);
             DeleteObject(box_pen);
             DeleteObject(thin_pen);
-
-            /* 2b. Facial Landmarks (5 Points Scaled) */
-            HPEN lm_pen = CreatePen(PS_SOLID, 1, RGB(255, 220, 60));
-            old_pen = (HPEN)SelectObject(hdc, lm_pen);
-            for (int k = 0; k < 5; k++) {
-                int lx = cam_offset_x + (int)(face->landmarks.x[k] * scale_x);
-                int ly = cam_offset_y + (int)(face->landmarks.y[k] * scale_y);
-                if (lx >= bx1 && lx <= bx2 && ly >= by1 && ly <= by2) {
-                    MoveToEx(hdc, lx - 3, ly, NULL); LineTo(hdc, lx + 4, ly);
-                    MoveToEx(hdc, lx, ly - 3, NULL); LineTo(hdc, lx, ly + 4);
-                }
-            }
-            SelectObject(hdc, old_pen);
-            DeleteObject(lm_pen);
         }
     }
-
-    /* 2.5 Draw on Side Panel using panel_persons state (10s retention) */
-    ULONGLONG current_tick = GetTickCount64();
-    for (int p = 0; p < num_panel_persons; p++) {
-        if (current_tick - panel_persons[p].last_seen_tick > 10000) {
-            for (int j = p; j < num_panel_persons - 1; j++) {
-                panel_persons[j] = panel_persons[j+1];
-            }
-            num_panel_persons--;
-            p--;
-            continue;
-        }
-
-        if (panel_cursor_y + 90 >= can_h) break;
-
-        int px = cam_viewport_w + 16;
-        int py = panel_cursor_y;
-        int pw = 70;
-        int ph = 70;
-        COLORREF badge_bg = RGB(10, 30, 20);
-        COLORREF box_color = RGB(0, 255, 128);
-
-        char disp_name[128];
-        format_person_name(panel_persons[p].matched_name, disp_name, sizeof(disp_name));
-
-        FaceImageCache *cache = get_enrolled_face(panel_persons[p].matched_name);
-
-        /* Draw background for crop */
-        RECT crop_bg_r = {px - 2, py - 2, px + pw + 2, py + ph + 2};
-        HBRUSH crop_b = CreateSolidBrush(badge_bg);
-        FillRect(hdc, &crop_bg_r, crop_b);
-        DeleteObject(crop_b);
-
-        if (cache && cache->hbm_crop) {
-            HDC hdc_face = CreateCompatibleDC(hdc);
-            HBITMAP old_bm = (HBITMAP)SelectObject(hdc_face, cache->hbm_crop);
-            SetStretchBltMode(hdc, HALFTONE);
-            SetBrushOrgEx(hdc, 0, 0, NULL);
-            StretchBlt(hdc, px, py, pw, ph, hdc_face, 0, 0, 80, 80, SRCCOPY);
-            SelectObject(hdc_face, old_bm);
-            DeleteDC(hdc_face);
-        } else {
-            SelectObject(hdc, win->font_regular);
-            SetTextColor(hdc, RGB(100, 100, 100));
-            TextOutA(hdc, px + 15, py + 25, "No Pic", 6);
-        }
-
-        /* Draw border for crop */
-        HPEN crop_pen = CreatePen(PS_SOLID, 1, box_color);
-        HPEN old_pen = (HPEN)SelectObject(hdc, crop_pen);
-        HBRUSH null_brush = (HBRUSH)GetStockObject(NULL_BRUSH);
-        HBRUSH old_brush = (HBRUSH)SelectObject(hdc, null_brush);
-        Rectangle(hdc, px, py, px + pw, py + ph);
-        SelectObject(hdc, old_brush);
-        SelectObject(hdc, old_pen);
-        DeleteObject(crop_pen);
-
-        /* Render name next to the crop */
-        SelectObject(hdc, win->font_regular);
-        SetTextColor(hdc, RGB(0, 255, 128));
-        TextOutA(hdc, px + pw + 10, py + 8, disp_name, (int)strlen(disp_name));
-        
-        SelectObject(hdc, win->font_small);
-        SetTextColor(hdc, RGB(150, 150, 150));
-        char acc_str[32];
-        snprintf(acc_str, sizeof(acc_str), "Score: %.2f", panel_persons[p].max_score);
-        TextOutA(hdc, px + pw + 10, py + 28, acc_str, (int)strlen(acc_str));
-
-        panel_cursor_y += ph + 14;
-    }
-
-    /* 3. Sleek Minimal HUD Card (FPS & Inference Time) */
-    RECT hud_rect = {16, 16, 195, 72};
-    HBRUSH hud_brush = CreateSolidBrush(RGB(15, 18, 24));
-    FillRect(hdc, &hud_rect, hud_brush);
-    DeleteObject(hud_brush);
-
-    HPEN hud_border = CreatePen(PS_SOLID, 1, RGB(45, 55, 75));
-    HPEN old_pen = (HPEN)SelectObject(hdc, hud_border);
-    HBRUSH null_br = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HBRUSH old_br = (HBRUSH)SelectObject(hdc, null_br);
-    Rectangle(hdc, hud_rect.left, hud_rect.top, hud_rect.right, hud_rect.bottom);
-    SelectObject(hdc, old_br);
-    SelectObject(hdc, old_pen);
-    DeleteObject(hud_border);
-
-    /* Display FPS */
-    SelectObject(hdc, win->font_bold);
-    SetTextColor(hdc, RGB(0, 255, 128));
-    char fps_txt[48];
-    snprintf(fps_txt, sizeof(fps_txt), "FPS: %.1f", display_fps);
-    TextOutA(hdc, 26, 23, fps_txt, (int)strlen(fps_txt));
-
-    /* Display Inference Time */
-    SetTextColor(hdc, RGB(0, 215, 255));
-    char inf_txt[48];
-    snprintf(inf_txt, sizeof(inf_txt), "Inference: %.1f ms", inference_ms);
-    TextOutA(hdc, 26, 45, inf_txt, (int)strlen(inf_txt));
 
     SelectObject(hdc, old_font);
 

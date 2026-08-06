@@ -11,6 +11,8 @@
 #include "attendance/api_dispatcher.h"
 #include "attendance/gui_preview.h"
 #include "attendance/video_capture.h"
+#include "attendance/video_capture.h"
+
 
 #include <signal.h>
 
@@ -118,6 +120,8 @@ int main(int argc, char **argv) {
     if (config.camera.show_preview) {
         win = gui_window_create("Talangmas AI Attendance - Live View", 640, 480);
     }
+
+
 
     printf("\n[Pipeline Ready] Processing live video stream at 640x480...\n");
 
@@ -268,6 +272,8 @@ int main(int argc, char **argv) {
             }
         }
 
+
+
         if (win) {
             gui_window_render(
                 win,
@@ -295,6 +301,7 @@ int main(int argc, char **argv) {
     face_engine_destroy(face_engine);
     face_matcher_destroy(matcher);
     attendance_db_close(db);
+
 
 #ifdef _WIN32
     if (h_instance_mutex) {
